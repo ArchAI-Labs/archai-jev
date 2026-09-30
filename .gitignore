@@ -1,0 +1,90 @@
+/target
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.ruff_cache/
+
+# C extensions (compiled Rust module placed here by `maturin develop`)
+*.so
+*.pyd
+*.pdb
+*.dylib
+
+# Distribution / packaging
+.Python
+.venv/
+env/
+bin/
+build/
+develop-eggs/
+dist/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+include/
+man/
+venv/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+pip-selfcheck.json
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+
+# Translations
+*.mo
+
+# Mr Developer
+.mr.developer.cfg
+.project
+.pydevproject
+
+# Rope
+.ropeproject
+
+# Django stuff:
+*.log
+*.pot
+
+.DS_Store
+
+# Sphinx documentation
+docs/_build/
+
+# PyCharm
+.idea/
+
+# VSCode
+.vscode/
+
+# Pyenv
+.python-version
+
+# Claude Code (local-only assistant config)
+.claude/
+CLAUDE.local.md
+
+# Spec-driven development workspace (local only: specs, research, playground)
+/spec/
+
+# Model weights and caches: downloaded at runtime, never committed
+*.safetensors
+*.gguf
+*.onnx
+*.pt
+/models/
