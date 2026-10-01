@@ -57,6 +57,12 @@ jobs:
           echo "CARGO_TARGET_DIR=C:\\t" >> "$GITHUB_ENV"
           echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
 
+      # macOS x86_64: maturin defaults to a deployment target of 10.12, but llama.cpp uses std::filesystem, which exists
+      # from macOS 10.15 ("'path' is unavailable: introduced in macOS 10.15"). arm64 already defaults to 11.0.
+      - name: macOS x86_64 deployment target
+        if: matrix.platform.name == 'macos-x86_64'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=10.15" >> "$GITHUB_ENV"
+
       - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
