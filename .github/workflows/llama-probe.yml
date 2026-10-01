@@ -28,6 +28,8 @@ jobs:
   probe:
     name: ${{ matrix.platform.name }} / ${{ matrix.variant }}
     runs-on: ${{ matrix.platform.runner }}
+    # A hung step must fail with a diagnosis, not sit for the 6 hour default (a macos-x86_64 job ran 42+ minutes).
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -84,8 +86,12 @@ jobs:
             uv venv --python "$py" ".smoke-$py"
             if [ -x ".smoke-$py/bin/python" ]; then PY=".smoke-$py/bin/python"; else PY=".smoke-$py/Scripts/python.exe"; fi
             uv pip install --python "$PY" "$WHEEL"
-            "$PY" -u -c "
-          import llama_probe as p, sys
+            "$PY" -u -X faulthandler -c "
+          import faulthandler, sys
+          faulthandler.dump_traceback_later(120, exit=True)  # a hang inside the C++ code dumps the Python stack and fails
+          print('importing llama_probe', flush=True)
+          import llama_probe as p
+          print('imported; calling into llama.cpp', flush=True)
           a = p.time_us(); b = p.time_us()
           assert b >= a, 'llama.cpp clock went backwards'
           assert p.built_with_openmp() == ('${{ matrix.variant }}' == 'openmp')
