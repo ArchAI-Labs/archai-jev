@@ -94,6 +94,8 @@ jobs:
           print('imported; calling into llama.cpp', flush=True)
           a = p.time_us(); b = p.time_us()
           assert b >= a, 'llama.cpp clock went backwards'
+          info = p.system_info()
+          assert 'gpu_offload=false' in info and 'MTL' not in info, 'a GPU backend got built into the CPU wheel: ' + info
           assert p.built_with_openmp() == ('${{ matrix.variant }}' == 'openmp')
           print(sys.version.split()[0], p.system_info())
           "
