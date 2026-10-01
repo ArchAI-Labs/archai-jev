@@ -1,0 +1,110 @@
+# Build probe for the llama.cpp backend (decision D22). MANUAL ONLY (Actions tab -> "llama-probe" -> Run workflow).
+#
+# Question it answers before feature 006: does llama.cpp (crate `llama-cpp-2`, C++ built with cmake + bindgen/libclang)
+# build, link into an abi3 Python extension, pass auditwheel (Linux) and run on all five wheel targets?
+# It builds `ci/llama-probe` (a throwaway PyO3 extension, NOT the product) in two variants (ggml's own thread pool and
+# OpenMP), installs the wheel with the oldest and newest supported Python and calls into the C++ code.
+# It does not touch the main CI, and nothing here is published.
+name: llama-probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  probe:
+    name: ${{ matrix.platform.name }} / ${{ matrix.variant }}
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [minimal, openmp]
+        platform:
+          - { name: linux-x86_64, runner: ubuntu-latest, target: x86_64 }
+          - { name: linux-aarch64, runner: ubuntu-24.04-arm, target: aarch64 }
+          - { name: macos-x86_64, runner: macos-15-intel, target: x86_64 }
+          - { name: macos-arm64, runner: macos-latest, target: aarch64 }
+          - { name: windows-x64, runner: windows-latest, target: x64 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+          architecture: ${{ matrix.platform.target == 'x64' && 'x64' || '' }}
+
+      # Windows: the C++ object paths of llama.cpp are very deep; a short target dir keeps MSBuild under MAX_PATH
+      # (seen locally: the build fails with a misleading "No CMAKE_C_COMPILER could be found" in a long path).
+      # The LLVM preinstalled on the runner provides libclang for bindgen.
+      - name: Windows build environment
+        if: runner.os == 'Windows'
+        run: |
+          echo "CARGO_TARGET_DIR=C:\\t" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: ci/llama-probe
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist ${{ matrix.variant == 'openmp' && '--features openmp' || '' }}
+          # manylinux_2_28 (AlmaLinux 8): a recent enough toolchain for llama.cpp. cmake and libclang (bindgen) are not in the image.
+          manylinux: ${{ runner.os == 'Linux' && '2_28' || 'auto' }}
+          before-script-linux: |
+            yum install -y cmake clang clang-devel
+          sccache: false
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Smoke test (oldest and newest supported Python)
+        run: |
+          WHEEL=$(ls ci/llama-probe/dist/*.whl)
+          for py in 3.10 3.14; do
+            uv venv --python "$py" ".smoke-$py"
+            if [ -x ".smoke-$py/bin/python" ]; then PY=".smoke-$py/bin/python"; else PY=".smoke-$py/Scripts/python.exe"; fi
+            uv pip install --python "$PY" "$WHEEL"
+            "$PY" -u -c "
+          import llama_probe as p, sys
+          a = p.time_us(); b = p.time_us()
+          assert b >= a, 'llama.cpp clock went backwards'
+          assert p.built_with_openmp() == ('${{ matrix.variant }}' == 'openmp')
+          print(sys.version.split()[0], p.system_info())
+          "
+          done
+
+      # The wheel must not silently depend on CPU instructions that older machines lack. x86_64 baseline we accept:
+      # SSE3/SSSE3/AVX/AVX2/F16C/FMA/BMI2 (+ llamafile/repack kernels). Anything else is reported as a warning, not a failure:
+      # the decision (baseline, or runtime dispatch of several CPU variants) belongs to spec 011 / the packaging rules.
+      - name: Portability report
+        run: |
+          WHEEL=$(ls ci/llama-probe/dist/*.whl)
+          if [ -x ".smoke-3.10/bin/python" ]; then PY=".smoke-3.10/bin/python"; else PY=".smoke-3.10/Scripts/python.exe"; fi
+          INFO=$("$PY" -c "import llama_probe as p; print(p.system_info())")
+          {
+            echo "### ${{ matrix.platform.name }} / ${{ matrix.variant }}"
+            echo ""
+            echo "- wheel: \`$(basename "$WHEEL")\` ($(du -h "$WHEEL" | cut -f1))"
+            echo "- \`system_info\`: \`$INFO\`"
+            echo "- files in the wheel:"
+            echo '```'
+            "$PY" -m zipfile -l "$WHEEL"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$INFO"
+          if echo "$INFO" | grep -Eq 'AVX512|AMX|VNNI'; then
+            echo "::warning title=Non-baseline CPU instructions (${{ matrix.platform.name }}/${{ matrix.variant }})::ggml was compiled with AVX512/AMX/VNNI: the wheel may crash with 'illegal instruction' on older CPUs. Report: $INFO"
+          fi
+
+      - name: Upload wheel (for inspection)
+        uses: actions/upload-artifact@v6
+        with:
+          name: llama-probe-${{ matrix.platform.name }}-${{ matrix.variant }}
+          path: ci/llama-probe/dist
+          retention-days: 7

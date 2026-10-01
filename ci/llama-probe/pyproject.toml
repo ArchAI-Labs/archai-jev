@@ -1,0 +1,13 @@
+[build-system]
+requires = ["maturin>=1.15,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "llama-probe"
+description = "Build probe for the llama.cpp backend of archai-jev. Not published."
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dynamic = ["version"]
+
+[tool.maturin]
+module-name = "llama_probe"
