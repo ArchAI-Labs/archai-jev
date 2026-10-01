@@ -1,4 +1,6 @@
-# Build probe for the llama.cpp backend (decision D22). MANUAL ONLY (Actions tab -> "llama-probe" -> Run workflow).
+# Build probe for the llama.cpp backend (decision D22). Runs on demand (Actions tab -> "llama-probe" -> Run workflow; GitHub lists
+# manual workflows only once the file is on the default branch) and on a push to `develop` that touches only the probe files below,
+# so it can be run from `develop` before it is merged.
 #
 # Question it answers before feature 006: does llama.cpp (crate `llama-cpp-2`, C++ built with cmake + bindgen/libclang)
 # build, link into an abi3 Python extension, pass auditwheel (Linux) and run on all five wheel targets?
@@ -9,6 +11,12 @@ name: llama-probe
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - develop
+    paths:
+      - ".github/workflows/llama-probe.yml"
+      - "ci/llama-probe/**"
 
 permissions:
   contents: read
