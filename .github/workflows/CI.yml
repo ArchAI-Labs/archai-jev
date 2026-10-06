@@ -43,6 +43,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Windows: the C++ object paths of llama.cpp are very deep; a short target dir keeps MSBuild under
+      # MAX_PATH. The LLVM preinstalled on the runner provides libclang for bindgen (see llama-probe.yml).
+      - name: Windows build environment
+        if: runner.os == 'Windows'
+        run: |
+          echo "CARGO_TARGET_DIR=C:\t" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v7
         with:
@@ -54,11 +61,27 @@ jobs:
       - name: Rust format
         run: cargo fmt --check
       - name: Rust lint
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --features testing -- -D warnings
+      - name: Cache the Kev tokenizer (test asset, not in the repository)
+        id: kev-tokenizer
+        uses: actions/cache@v5
+        with:
+          path: kev-tokenizer.json
+          key: kev-tokenizer-06b9509352d2af50
+      - name: Download the Kev tokenizer (SHA-256 checked)
+        if: steps.kev-tokenizer.outputs.cache-hit != 'true'
+        run: |
+          curl -fL --retry 4 --retry-delay 5 -o kev-tokenizer.json             https://huggingface.co/jaredpalmer/kev-0.8b/resolve/9a45d25eb2ab761841196625383fa1dff0e56c1e/tokenizer.json
+      - name: Check the Kev tokenizer and expose it to the tests
+        run: |
+          echo "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523  kev-tokenizer.json" > kev-tokenizer.sha256
+          if command -v sha256sum >/dev/null; then sha256sum -c kev-tokenizer.sha256; else shasum -a 256 -c kev-tokenizer.sha256; fi
+          echo "ARCHAI_JEV_TEST_TOKENIZER=$PWD/kev-tokenizer.json" >> "$GITHUB_ENV"
+          echo "ARCHAI_JEV_REQUIRE_ASSETS=1" >> "$GITHUB_ENV"
       - name: Rust tests
-        run: cargo test
+        run: cargo test --features testing
       - name: Build extension
-        run: uv run --no-sync maturin develop --uv
+        run: uv run --no-sync maturin develop --uv --features testing
       - name: Python format
         run: uv run --no-sync black --check python tests
       - name: Python lint
@@ -91,7 +114,10 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
-          manylinux: auto
+          # manylinux_2_28 (AlmaLinux 8): a toolchain recent enough for llama.cpp; cmake and libclang are not in the image.
+          manylinux: "2_28"
+          before-script-linux: |
+            yum install -y cmake clang clang-devel
       - uses: astral-sh/setup-uv@v7
       - name: Smoke test (oldest and newest supported Python)
         shell: bash
@@ -100,7 +126,12 @@ jobs:
             uv venv --python "$py" ".smoke-$py"
             if [ -x ".smoke-$py/bin/python" ]; then PY=".smoke-$py/bin/python"; else PY=".smoke-$py/Scripts/python.exe"; fi
             uv pip install --python "$PY" dist/*.whl
-            "$PY" -c "import archai_jev; print(archai_jev.calibrated_softmax([1.0, 2.0]))"
+            "$PY" -c "import archai_jev, tempfile; print(archai_jev.calibrated_softmax([1.0, 2.0])); assert any(m.is_default for m in archai_jev.list_models());
+          try:
+              archai_jev.Jev.from_pretrained(offline=True, cache_dir=tempfile.mkdtemp())
+              raise SystemExit('the default model must not load from an empty cache')
+          except archai_jev.ModelDownloadError as e:
+              print('offline with an empty cache:', str(e)[:80])"
           done
       - name: Upload wheels
         uses: actions/upload-artifact@v6
@@ -122,6 +153,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
+      # macOS x86_64: maturin defaults to 10.12 but llama.cpp uses std::filesystem (macOS 10.15 and later).
+      - name: macOS x86_64 deployment target
+        if: matrix.platform.target == 'x86_64'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=10.15" >> "$GITHUB_ENV"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -136,7 +171,12 @@ jobs:
             uv venv --python "$py" ".smoke-$py"
             if [ -x ".smoke-$py/bin/python" ]; then PY=".smoke-$py/bin/python"; else PY=".smoke-$py/Scripts/python.exe"; fi
             uv pip install --python "$PY" dist/*.whl
-            "$PY" -c "import archai_jev; print(archai_jev.calibrated_softmax([1.0, 2.0]))"
+            "$PY" -c "import archai_jev, tempfile; print(archai_jev.calibrated_softmax([1.0, 2.0])); assert any(m.is_default for m in archai_jev.list_models());
+          try:
+              archai_jev.Jev.from_pretrained(offline=True, cache_dir=tempfile.mkdtemp())
+              raise SystemExit('the default model must not load from an empty cache')
+          except archai_jev.ModelDownloadError as e:
+              print('offline with an empty cache:', str(e)[:80])"
           done
       - name: Upload wheels
         uses: actions/upload-artifact@v6
@@ -152,6 +192,11 @@ jobs:
         with:
           python-version: "3.x"
           architecture: x64
+      - name: Windows build environment
+        shell: bash
+        run: |
+          echo "CARGO_TARGET_DIR=C:\t" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -166,7 +211,12 @@ jobs:
             uv venv --python "$py" ".smoke-$py"
             if [ -x ".smoke-$py/bin/python" ]; then PY=".smoke-$py/bin/python"; else PY=".smoke-$py/Scripts/python.exe"; fi
             uv pip install --python "$PY" dist/*.whl
-            "$PY" -c "import archai_jev; print(archai_jev.calibrated_softmax([1.0, 2.0]))"
+            "$PY" -c "import archai_jev, tempfile; print(archai_jev.calibrated_softmax([1.0, 2.0])); assert any(m.is_default for m in archai_jev.list_models());
+          try:
+              archai_jev.Jev.from_pretrained(offline=True, cache_dir=tempfile.mkdtemp())
+              raise SystemExit('the default model must not load from an empty cache')
+          except archai_jev.ModelDownloadError as e:
+              print('offline with an empty cache:', str(e)[:80])"
           done
       - name: Upload wheels
         uses: actions/upload-artifact@v6

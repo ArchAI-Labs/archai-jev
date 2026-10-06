@@ -1,0 +1,26 @@
+{
+ "purpose": "Golden of the default model for the parity tests of the prompt (ids) and of the engine (logits).",
+ "inputs": "Written by the archai-jev authors; the prompts follow the training formatters of the model's author.",
+ "outputs": "Logits of nickprock/archai-jev-qwen-1.5b (Apache-2.0) at the answer tokens, PyTorch fp32, base + LoRA fused in fp32.",
+ "model": {
+  "repo": "nickprock/archai-jev-qwen-1.5b",
+  "revision": "e4f3964abbc746f164f6cd009104e5213decba80"
+ },
+ "base": {
+  "repo": "Qwen/Qwen2.5-1.5B-Instruct",
+  "revision": "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+ },
+ "tokenizer_json_sha256": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+ "stack": {
+  "torch": "2.14.0+cpu",
+  "device": "cpu",
+  "dtype": "float32"
+ },
+ "rows": 48,
+ "file_sha256": {
+  "golden.jsonl": {
+   "sha256": "8079aa5c303290f8e7d0b601a2c1da9d3f38899311f42dfce30e6283f2c8fc60",
+   "bytes": 45974
+  }
+ }
+}
