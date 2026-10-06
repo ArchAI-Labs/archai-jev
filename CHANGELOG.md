@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-06
+
 ### Added
 - `Jev.from_pretrained(...)`: loads the default demo model, a model of the registry or a local
   folder with a manifest; every file is verified (SHA-256), the weights, tokenizer and head are
