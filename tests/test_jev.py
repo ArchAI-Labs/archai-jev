@@ -315,14 +315,23 @@ def test_gil_is_released_during_ask() -> None:
     t = threading.Thread(target=ticker)
     t.start()
     try:
+        # Reference: how many ticks fit in 0.2 s on this machine while the main thread merely
+        # sleeps (a CI runner's timer can be several times coarser than 10 ms).
+        before = ticks
+        time.sleep(0.2)
+        baseline = ticks - before
+        before = ticks
         jev.ask(STATE, QUESTIONS)
-        first = ticks
+        first = ticks - before
+        before = ticks
         jev.ask_many([STATE], QUESTIONS)
-        second = ticks - first
+        second = ticks - before
     finally:
         stop.set()
         t.join()
-    assert first >= 10 and second >= 10
+    # With the GIL held for the whole call the ticker would get no tick at all.
+    floor = max(2, baseline // 2)
+    assert first >= floor and second >= floor, (baseline, first, second)
 
 
 def test_asyncio() -> None:
@@ -338,10 +347,16 @@ def test_asyncio() -> None:
                 ticks += 1
 
         t = asyncio.create_task(ticker())
+        # Reference for this machine: ticks that fit in 0.2 s of plain awaiting.
+        await asyncio.sleep(0)
+        ticks = 0
+        await asyncio.sleep(0.2)
+        baseline = ticks
         sync = jev.ask(STATE, QUESTIONS)
         ticks = 0
         assert await jev.aask(STATE, QUESTIONS) == sync
-        assert ticks >= 10
+        # A blocking call would leave the event loop without a single tick.
+        assert ticks >= max(2, baseline // 2), (baseline, ticks)
         assert await jev.aask_many([STATE], QUESTIONS) == [sync]
         task = asyncio.create_task(jev.aask(STATE, QUESTIONS))
         await asyncio.sleep(0.02)

@@ -125,8 +125,12 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
-          # manylinux_2_28 (AlmaLinux 8): a toolchain recent enough for llama.cpp; cmake and libclang are not in the image.
-          manylinux: "2_28"
+          # Built in the manylinux_2_28 image (AlmaLinux 8: a toolchain recent enough for llama.cpp; cmake and libclang are
+          # not in it) but tagged manylinux_2_31. The full llama.cpp references GLIBCXX_3.4.25 (std::random_device), and the
+          # manylinux_2_28 policy of maturin stops at 3.4.24 ("not manylinux_2_28 compliant"); the 2_31 policy allows up to
+          # 3.4.28 (Ubuntu 20.04, Debian 11 and newer). The llama-probe crate did not reach that symbol.
+          manylinux: "2_31"
+          container: quay.io/pypa/manylinux_2_28_${{ matrix.platform.target }}:latest
           before-script-linux: |
             yum install -y cmake clang clang-devel
       - uses: astral-sh/setup-uv@v7
