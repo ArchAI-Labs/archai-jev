@@ -1,0 +1,54 @@
+# Publish the wheels of a CI run to TestPyPI, by hand (Trusted Publishing, no stored token).
+#
+# Separate from the real release (CI.yml publishes to PyPI only on a `v*` tag). Use it to try the
+# whole install path before tagging:
+#
+#   1. Run the CI on the commit you want to try (push to `develop`, wait for the green run).
+#   2. Actions -> "testpypi" -> Run workflow -> paste the id of that CI run (the number at the end of
+#      its URL).
+#   3. On another machine: pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ archai-jev
+#
+# One-time setup on TestPyPI (https://test.pypi.org/manage/account/publishing/): add a pending
+# trusted publisher for the project `archai-jev` with owner/repository of this repo, workflow
+# `testpypi.yml` and environment `testpypi`. Create the environment `testpypi` in the repository
+# settings (Settings -> Environments).
+#
+# TestPyPI refuses a version that already exists: bump the version in Cargo.toml for every try.
+name: testpypi
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Id of a successful CI run on this repository whose wheels and sdist to publish"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      # Trusted Publishing (OIDC) to TestPyPI, no stored token.
+      id-token: write
+      # Reading the artifacts of another run.
+      actions: read
+    steps:
+      - name: Download the wheels and the sdist of the CI run
+        uses: actions/download-artifact@v7
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: What will be published
+        run: |
+          ls -l dist
+          test "$(ls dist | wc -l)" -ge 6 || { echo "::error::expected 5 wheels and 1 sdist, found $(ls dist | wc -l) files"; exit 1; }
+      - uses: astral-sh/setup-uv@v7
+      - name: Publish to TestPyPI
+        run: uv publish --trusted-publishing always --publish-url https://test.pypi.org/legacy/ dist/*

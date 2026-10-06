@@ -1,0 +1,103 @@
+[build-system]
+requires = ["maturin>=1.15,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "archai-jev"
+description = "High-performance Rust runtime for System One decision models: typed answers with calibrated probabilities."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Nicola Procopio" }]
+keywords = [
+    "llm",
+    "classification",
+    "calibration",
+    "decision-model",
+    "system-one",
+    "jev",
+    "rust",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/ArchAI-Labs/archai-jev"
+Repository = "https://github.com/ArchAI-Labs/archai-jev"
+Issues = "https://github.com/ArchAI-Labs/archai-jev/issues"
+Changelog = "https://github.com/ArchAI-Labs/archai-jev/blob/main/CHANGELOG.md"
+
+[tool.maturin]
+python-source = "python"
+module-name = "archai_jev._core"
+exclude = [
+    "**/__pycache__",
+    "**/*.pyc",
+    "**/*.pyo",
+    "**/*.pdb",
+]
+
+[dependency-groups]
+dev = [
+    "black",
+    "hypothesis",
+    "maturin>=1.15,<2.0",
+    "mypy",
+    "pytest",
+    "ruff",
+]
+
+[tool.black]
+target-version = ["py310"]
+
+# Ruff is used ONLY as a linter; Black is the formatter.
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+src = ["python", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "N",    # pep8-naming
+    "PYI",  # type stub checks
+    "RUF",  # ruff-specific
+]
+# Rules that conflict with Black (see Ruff docs: "Conflicting lint rules").
+ignore = ["E501", "COM812", "ISC001"]
+
+[tool.ruff.lint.per-file-ignores]
+# Stubs of the compiled module keep docstrings so IDEs can show them on hover.
+"*.pyi" = ["PYI021"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["python", "tests"]
+mypy_path = "python"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

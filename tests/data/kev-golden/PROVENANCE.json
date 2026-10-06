@@ -1,0 +1,73 @@
+{
+ "purpose": "Reduced golden of Kev-0.8B for the parity tests of archai-jev (prompt ids, then numbers).",
+ "inputs": "The requests are written by the archai-jev authors.",
+ "outputs": "Token ids, logits and probabilities computed by Kev-0.8B (Apache-2.0) with Kev's own code, fp32, CPU.",
+ "checkpoint": {
+  "repo": "jaredpalmer/kev-0.8b",
+  "revision": "9a45d25eb2ab761841196625383fa1dff0e56c1e",
+  "tokenizer_json_sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+  "adapter_sha256": "9b908623acb162118575f4e7a94524f9c139c335be4bfb74d6cfceca01e1885a",
+  "head_sha256": "f400bd12802b2b105ae45d6b03774a158a3db4fccff42413734ddca2e5c920b6",
+  "temperature": 2.3510958125672174
+ },
+ "base": {
+  "repo": "Qwen/Qwen3.5-0.8B-Base",
+  "revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68",
+  "weights_sha256": "c2b1e5a17d9c1e27685d92ed9b382911ebb99955ecd89052d1721241adfbab6c",
+  "tokenizer_json_sha256": "fe000e3ed39ed12b8d2481d527d44f93c65d37e87645d2dcc80d1bf9d50d2927",
+  "tokenizer_config_sha256": "e611fbccc7c29ef3b1cafb1cb7ea548d189968632901d678fd62be68c47885de"
+ },
+ "kev_source": {
+  "repo": "jaredpalmer/kev",
+  "reference_commit": "67117d85a99989787db22224a98784db9a6f2794 (main when downloaded, used to run the golden)",
+  "checkpoint_was_trained_and_measured_at": "45923b7a3460b6d36358e2e143455902c1eb856b"
+ },
+ "numerics": {
+  "dtype": "float32",
+  "device": "cpu",
+  "lora": "merged in fp32 (peft merge_and_unload, Kev default)",
+  "attn": "eager",
+  "threads": 8,
+  "gated_delta_rule": "transformers reference PyTorch implementation (flash-linear-attention / causal_conv1d not installed)",
+  "torch": "2.8.0+cpu",
+  "transformers": "5.17.0",
+  "peft": "0.21.0",
+  "tokenizers": "0.23.2",
+  "safetensors": "0.8.0",
+  "numpy": "2.5.3",
+  "python": "3.12.10",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "cpu": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel"
+ },
+ "dropped_fields": [
+  "prompt_text",
+  "xcheck",
+  "seconds",
+  "why",
+  "state_text",
+  "answer",
+  "confidence_legacy_45923b7",
+  "instr_text",
+  "option_texts"
+ ],
+ "rows": {
+  "golden.jsonl": 65,
+  "selfcheck.jsonl": 8,
+  "golden_extra.jsonl": 4
+ },
+ "tokenizer_json_sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+ "file_sha256": {
+  "golden.jsonl": {
+   "sha256": "4777456bf752cba8f85c033507f9732151bab149cdf882a402996bda95eb0e1d",
+   "bytes": 233550
+  },
+  "selfcheck.jsonl": {
+   "sha256": "3723957af37a58dfbf49d332eb4e5e3d2489e067d86c968d81e939ac24840365",
+   "bytes": 12620
+  },
+  "golden_extra.jsonl": {
+   "sha256": "a6c3b7e4cefca518dcf4a960f03303c359111b7055c5dcf4763c6c7650ccf493",
+   "bytes": 49463
+  }
+ }
+}

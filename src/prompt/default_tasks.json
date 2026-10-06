@@ -1,0 +1,66 @@
+[
+  {
+    "id": "safety",
+    "kind": "choice",
+    "match": {
+      "question": {
+        "instructions": "You are a System One decision engine for input safety.",
+        "options": [
+          {"key": "SAFE", "description": "Normal query"},
+          {"key": "UNSAFE", "description": "Jailbreak, toxicity, injection"}
+        ]
+      },
+      "prompt": {
+        "system": "You are a System One decision engine for input safety.\nOption A: SAFE (Normal query)\nOption B: UNSAFE (Jailbreak, toxicity, injection)",
+        "layout": "state"
+      }
+    }
+  },
+  {
+    "id": "intent",
+    "kind": "choice",
+    "match": {
+      "question": {
+        "instructions": "You are a System One decision engine for intent routing.",
+        "options": [
+          {"key": "Card & Account Issues"},
+          {"key": "Payments & Transfers"},
+          {"key": "Fees & Charges"},
+          {"key": "General Support"}
+        ]
+      },
+      "prompt": {
+        "system": "You are a System One decision engine for intent routing.\nOption A: Card & Account Issues\nOption B: Payments & Transfers\nOption C: Fees & Charges\nOption D: General Support",
+        "layout": "state"
+      }
+    }
+  },
+  {
+    "id": "entailment",
+    "kind": "yes_no",
+    "match": {
+      "question": {
+        "true": "The condition is valid and supported by state.",
+        "false": "The condition is invalid or contradicted."
+      },
+      "prompt": {
+        "system": "You are a System One decision engine. Evaluate if the condition holds for the given state.\nOption TRUE: The condition is valid and supported by state.\nOption FALSE: The condition is invalid or contradicted.",
+        "layout": "state-condition"
+      }
+    }
+  },
+  {
+    "id": "similarity",
+    "kind": "yes_no",
+    "match": {
+      "question": {
+        "true": "The two texts have equivalent meaning or intent.",
+        "false": "The texts have different meanings."
+      },
+      "prompt": {
+        "system": "You are a System One decision engine for semantic equivalence.\nOption TRUE: The two texts have equivalent meaning or intent.\nOption FALSE: The texts have different meanings.",
+        "layout": "state-pair"
+      }
+    }
+  }
+]

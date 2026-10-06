@@ -1,0 +1,7 @@
+# llama-cpp-sys-2 forwards every GGML_* environment variable to CMake as a cache entry. On macOS the crate leaves Metal ON
+# by default, so a "CPU" wheel silently contains the GPU backend (seen in the llama-probe workflow: `MTL : EMBED_LIBRARY = 1`,
+# `gpu_offload=true`) and the first call compiles Metal shaders at run time, which hung for 2+ minutes on a CI VM without a GPU.
+# The product wheel is CPU only (GPU acceleration is feature 011), so Metal is switched off for every build of this crate,
+# including builds from the sdist on a user's machine. Cargo applies [env] to build scripts too.
+[env]
+GGML_METAL = { value = "OFF", force = false }

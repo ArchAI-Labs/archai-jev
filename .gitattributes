@@ -1,0 +1,31 @@
+# Line endings: LF in the repository AND in every checkout, on every OS.
+# This overrides each machine's core.autocrlf, so Windows, macOS and Linux clones are identical
+# (sdist contents, rustfmt/black --check and test fixtures behave the same everywhere).
+* text=auto eol=lf
+
+# Scripts that only run on Windows keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files: never convert, never diff as text.
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.pyd binary
+*.so binary
+*.dylib binary
+*.dll binary
+*.whl binary
+*.safetensors binary
+*.gguf binary
+*.onnx binary
+*.pt binary
+*.bin binary
+
+# Generated lockfiles: collapsed in GitHub diffs and excluded from language stats.
+Cargo.lock linguist-generated=true
+uv.lock linguist-generated=true
