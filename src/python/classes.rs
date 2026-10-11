@@ -407,6 +407,27 @@ impl PyModel {
         }
     }
 
+    /// The prefix memory as `(limit_bytes, bytes, entries, hits, misses, evictions,
+    /// tokens_reused, tokens_decoded)`; all zeros for a scorer that has none.
+    fn cache_info(&self) -> (u64, u64, u64, u64, u64, u64, u64, u64) {
+        let i = self.scorer.cache_info().unwrap_or_default();
+        (
+            i.limit_bytes,
+            i.bytes,
+            i.entries,
+            i.hits,
+            i.misses,
+            i.evictions,
+            i.tokens_reused,
+            i.tokens_decoded,
+        )
+    }
+
+    /// Forget every saved prefix. Never changes a result.
+    fn clear_cache(&self) {
+        self.scorer.clear_cache();
+    }
+
     /// Ask every question about `state`; returns one tuple per answer, in question order.
     fn ask<'py>(
         &self,

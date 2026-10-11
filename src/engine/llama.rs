@@ -13,6 +13,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::context::params::{LlamaContextParams, LlamaPoolingType};
+use llama_cpp_2::context::session::{LlamaStateSeqFlags, SeqState};
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::LlamaModel;
@@ -20,7 +21,7 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::token::LlamaToken;
 
 use super::cpu::{self, HostCpu};
-use super::{Forward, Output, OutputSpec, Session};
+use super::{Forward, Output, OutputSpec, Session, Snapshot};
 use crate::error::{Error, Result};
 
 fn inference(detail: impl Into<String>) -> Error {
@@ -89,6 +90,18 @@ impl LlamaForward {
         usize::try_from(self.model.n_vocab()).unwrap_or(0)
     }
 
+    /// The engine and the settings of the contexts it creates, as a string for the identity of a
+    /// saved prefix: built from what is really set, so changing a parameter changes the key.
+    pub fn engine_fingerprint(&self) -> String {
+        format!(
+            "llama-cpp-2=0.1.157; n_ctx={}x2; n_batch={}; n_ubatch={}; n_seq_max=2; embeddings={}; kv=library default",
+            self.config.max_context,
+            self.config.max_context,
+            self.config.max_context,
+            self.config.hidden_states
+        )
+    }
+
     fn context_params(&self) -> Result<LlamaContextParams> {
         let rows = 2u32; // sequence 0 holds the state, sequence 1 the question being run
         let n_ctx = self
@@ -136,7 +149,8 @@ fn decode(
 
 struct LlamaSession<'a> {
     ctx: LlamaContext<'a>,
-    state_len: usize,
+    /// Tokens on sequence 0, the part every question starts from.
+    shared_len: usize,
     hidden_states: bool,
     _guard: MutexGuard<'a, ()>,
 }
@@ -145,14 +159,21 @@ fn first_non_finite(values: &[f32]) -> Option<f32> {
     values.iter().copied().find(|v| !v.is_finite())
 }
 
+/// What to read after the last decode of a row. Numbers are read **by batch index** (spike S4):
+/// a position of the spec minus where the last decode's batch starts.
+struct Reading<'s> {
+    specs: &'s [OutputSpec],
+    /// Where the last decode's batch starts, counted like the positions of the specs.
+    last_start: usize,
+}
+
 impl LlamaSession<'_> {
-    fn read(&self, specs: &[OutputSpec]) -> Result<Vec<Output>> {
-        let mut out = Vec::with_capacity(specs.len());
-        for spec in specs {
+    fn read(&self, reading: &Reading<'_>) -> Result<Vec<Output>> {
+        let mut out = Vec::with_capacity(reading.specs.len());
+        for spec in reading.specs {
             match spec {
                 OutputSpec::Hidden { position } => {
-                    let i =
-                        i32::try_from(*position).map_err(|_| inference("position too large"))?;
+                    let i = batch_index(*position, reading.last_start)?;
                     let h = self.ctx.embeddings_ith(i).map_err(|e| {
                         inference(format!("cannot read the hidden state at {position}: {e}"))
                     })?;
@@ -166,8 +187,7 @@ impl LlamaSession<'_> {
                     out.push(Output::Hidden(h.to_vec()));
                 }
                 OutputSpec::Logits { position, ids } => {
-                    let i =
-                        i32::try_from(*position).map_err(|_| inference("position too large"))?;
+                    let i = batch_index(*position, reading.last_start)?;
                     let row = self.ctx.get_logits_ith(i);
                     let picked = super::pick_logits(row, ids, *position)?;
                     out.push(Output::Logits(picked));
@@ -182,46 +202,141 @@ impl LlamaSession<'_> {
         }
         Ok(out)
     }
+
+    /// The position of each spec, checking the model was loaded for that kind of output.
+    fn positions(&self, outputs: &[OutputSpec]) -> Result<Vec<usize>> {
+        outputs
+            .iter()
+            .map(|spec| {
+                let (position, wants_hidden) = match spec {
+                    OutputSpec::Hidden { position } => (*position, true),
+                    OutputSpec::Logits { position, .. } => (*position, false),
+                    #[allow(unreachable_patterns)]
+                    _ => {
+                        return Err(inference(
+                            "this kind of output is not supported by the engine",
+                        ));
+                    }
+                };
+                if wants_hidden == self.hidden_states {
+                    Ok(position)
+                } else {
+                    Err(inference(if wants_hidden {
+                        "this model was loaded to read logits, not hidden states"
+                    } else {
+                        "this model was loaded to read hidden states, not logits"
+                    }))
+                }
+            })
+            .collect()
+    }
+}
+
+fn batch_index(position: usize, last_start: usize) -> Result<i32> {
+    position
+        .checked_sub(last_start)
+        .and_then(|i| i32::try_from(i).ok())
+        .ok_or_else(|| inference("output position is outside the last segment"))
 }
 
 impl Session for LlamaSession<'_> {
     fn row(&mut self, branch: &[u32], outputs: &[OutputSpec]) -> Result<Vec<Output>> {
-        let mut wanted = vec![false; branch.len()];
-        for spec in outputs {
-            let (position, wants_hidden) = match spec {
-                OutputSpec::Hidden { position } => (*position, true),
-                OutputSpec::Logits { position, .. } => (*position, false),
-                #[allow(unreachable_patterns)]
-                _ => {
-                    return Err(inference(
-                        "this kind of output is not supported by the engine",
-                    ));
-                }
-            };
-            if wants_hidden != self.hidden_states {
-                return Err(inference(if wants_hidden {
-                    "this model was loaded to read logits, not hidden states"
-                } else {
-                    "this model was loaded to read hidden states, not logits"
-                }));
-            }
-            match wanted.get_mut(position) {
+        self.row_segments(&[branch], outputs)
+    }
+
+    fn shared_len(&self) -> usize {
+        self.shared_len
+    }
+
+    fn restore(&mut self, snapshot: &Snapshot) -> Result<()> {
+        if self.shared_len != 0 {
+            return Err(inference(
+                "a snapshot can only be restored on an empty session",
+            ));
+        }
+        let saved = snapshot
+            .downcast_ref::<SeqState>()
+            .ok_or_else(|| inference("the snapshot was not made by this engine"))?;
+        self.ctx
+            .state_seq_set(saved, 0)
+            .map_err(|e| inference(format!("cannot restore the saved state: {e}")))?;
+        self.shared_len = snapshot.tokens();
+        Ok(())
+    }
+
+    fn extend(&mut self, tokens: &[u32]) -> Result<()> {
+        if tokens.is_empty() {
+            return Ok(());
+        }
+        let mut wanted = vec![false; tokens.len()];
+        if let Some(last) = wanted.last_mut() {
+            *last = true;
+        }
+        decode(&mut self.ctx, tokens, self.shared_len, 0, &wanted)?;
+        self.shared_len += tokens.len();
+        Ok(())
+    }
+
+    fn snapshot(&mut self) -> Result<Snapshot> {
+        let saved = self
+            .ctx
+            .state_seq_get(0, LlamaStateSeqFlags::empty())
+            .map_err(|e| inference(format!("cannot save the state: {e}")))?;
+        Ok(Snapshot::new(self.shared_len, saved.byte_len(), saved))
+    }
+
+    fn row_segments(&mut self, segments: &[&[u32]], outputs: &[OutputSpec]) -> Result<Vec<Output>> {
+        let positions = self.positions(outputs)?;
+        let total: usize = segments.iter().map(|s| s.len()).sum();
+        let last = match segments.last() {
+            Some(last) if !last.is_empty() => *last,
+            _ => return Err(inference("a row needs a last segment with tokens")),
+        };
+        let last_start = total - last.len();
+        // Outputs come only from the last decode: a position elsewhere is a fault of the caller.
+        let mut wanted = vec![false; last.len()];
+        for position in positions {
+            match position
+                .checked_sub(last_start)
+                .and_then(|i| wanted.get_mut(i))
+            {
                 Some(slot) => *slot = true,
                 None => {
                     return Err(inference(format!(
-                        "output position {position} is outside the branch of {} tokens",
-                        branch.len()
+                        "output position {position} is outside the last segment ({last_start}..{total})"
                     )));
                 }
             }
         }
-        if self.state_len > 0 {
+        if self.shared_len > 0 {
             self.ctx
                 .kv_cache_seq_cp(0, 1, None, None)
                 .map_err(|e| inference(format!("cannot copy the state: {e}")))?;
         }
-        let result = decode(&mut self.ctx, branch, self.state_len, 1, &wanted)
-            .and_then(|()| self.read(outputs));
+        let result = (|| {
+            let mut start = self.shared_len;
+            for (i, segment) in segments.iter().enumerate() {
+                if segment.is_empty() {
+                    continue;
+                }
+                if i + 1 == segments.len() {
+                    decode(&mut self.ctx, segment, start, 1, &wanted)?;
+                } else {
+                    // The last token of a segment has an output, as with the shared part: a decode
+                    // with no output at all is not something to rely on.
+                    let mut only_last = vec![false; segment.len()];
+                    if let Some(slot) = only_last.last_mut() {
+                        *slot = true;
+                    }
+                    decode(&mut self.ctx, segment, start, 1, &only_last)?;
+                }
+                start += segment.len();
+            }
+            self.read(&Reading {
+                specs: outputs,
+                last_start,
+            })
+        })();
         // The copy is discarded whatever happened: the next question starts from the state alone.
         let cleared = self
             .ctx
@@ -233,28 +348,33 @@ impl Session for LlamaSession<'_> {
     }
 }
 
-impl Forward for LlamaForward {
-    fn begin<'a>(&'a self, state: &[u32]) -> Result<Box<dyn Session + 'a>> {
+impl LlamaForward {
+    fn start<'a>(&'a self) -> Result<LlamaSession<'a>> {
         let guard = self
             .lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut ctx = self
+        let ctx = self
             .model
             .new_context(backend()?, self.context_params()?)
             .map_err(|e| inference(format!("cannot create the context: {e}")))?;
-        if !state.is_empty() {
-            let mut wanted = vec![false; state.len()];
-            if let Some(last) = wanted.last_mut() {
-                *last = true;
-            }
-            decode(&mut ctx, state, 0, 0, &wanted)?;
-        }
-        Ok(Box::new(LlamaSession {
+        Ok(LlamaSession {
             ctx,
-            state_len: state.len(),
+            shared_len: 0,
             hidden_states: self.config.hidden_states,
             _guard: guard,
-        }))
+        })
+    }
+}
+
+impl Forward for LlamaForward {
+    fn begin<'a>(&'a self, state: &[u32]) -> Result<Box<dyn Session + 'a>> {
+        let mut session = self.start()?;
+        session.extend(state)?;
+        Ok(Box::new(session))
+    }
+
+    fn begin_empty<'a>(&'a self) -> Result<Box<dyn Session + 'a>> {
+        Ok(Box::new(self.start()?))
     }
 }

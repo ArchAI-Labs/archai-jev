@@ -5,21 +5,60 @@
 //! state followed by that question's branch (what the model actually runs, and what
 //! `max_context` limits).
 
+/// What a cut point depends on (it decides whether a cached prefix is worth keeping).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CutKind {
+    /// Depends only on the task: the system block and the head of the user text.
+    Fixed,
+    /// Depends on the text the user sent: the end of the state.
+    Content,
+}
+
+/// A place where a template says "the row may be split here and the prefix kept".
+///
+/// A row is always decoded in the segments its own cuts define, so the numbers a row gets do not
+/// depend on which other rows travel with it or on what was cached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cut {
+    /// Position: the number of tokens before the cut.
+    pub pos: usize,
+    /// What the prefix before the cut depends on.
+    pub kind: CutKind,
+}
+
 /// One question's tokens and the positions the head reads from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branch {
     ids: Vec<u32>,
     decide: usize,
     option_ends: Vec<usize>,
+    cuts: Vec<Cut>,
 }
 
 impl Branch {
     pub(crate) fn new(ids: Vec<u32>, decide: usize, option_ends: Vec<usize>) -> Self {
+        Branch::with_cuts(ids, decide, option_ends, Vec::new())
+    }
+
+    /// A branch with cut points, as positions **inside the branch** (strictly increasing, each
+    /// `0 < pos < len`; the request plan checks this and that the outputs lie after the last cut).
+    pub(crate) fn with_cuts(
+        ids: Vec<u32>,
+        decide: usize,
+        option_ends: Vec<usize>,
+        cuts: Vec<Cut>,
+    ) -> Self {
         Branch {
             ids,
             decide,
             option_ends,
+            cuts,
         }
+    }
+
+    /// The cut points of the branch, as positions inside the branch.
+    pub fn cuts(&self) -> &[Cut] {
+        &self.cuts
     }
 
     /// The tokens of the branch.
@@ -98,6 +137,25 @@ impl Prompt {
         self.branches.get(i).map(|b| self.state.len() + b.len())
     }
 
+    /// The cut points of the row of question `i`, as positions inside the row: the end of the
+    /// state (when there is one, `Content`) followed by the cuts of the branch shifted by it.
+    pub fn row_cuts(&self, i: usize) -> Option<Vec<Cut>> {
+        let b = self.branches.get(i)?;
+        let shift = self.state.len();
+        let mut cuts = Vec::with_capacity(b.cuts.len() + 1);
+        if shift > 0 {
+            cuts.push(Cut {
+                pos: shift,
+                kind: CutKind::Content,
+            });
+        }
+        cuts.extend(b.cuts.iter().map(|c| Cut {
+            pos: c.pos + shift,
+            kind: c.kind,
+        }));
+        Some(cuts)
+    }
+
     /// The row of question `i`: state followed by its branch.
     pub fn row(&self, i: usize) -> Option<Vec<u32>> {
         let b = self.branches.get(i)?;
@@ -143,5 +201,38 @@ mod tests {
         assert_eq!(p.row_len(1), Some(4));
         assert_eq!(p.row(1), Some(vec![1, 2, 20, 21]));
         assert_eq!(p.row(2), None);
+    }
+
+    #[test]
+    fn row_cuts_are_the_state_end_then_the_branch_cuts_shifted() {
+        let fixed = |pos| Cut {
+            pos,
+            kind: CutKind::Fixed,
+        };
+        let p = Prompt::new(
+            vec![1, 2, 3],
+            vec![
+                Branch::with_cuts(vec![10, 11, 12, 13], 3, Vec::new(), vec![fixed(2)]),
+                Branch::new(vec![20, 21], 1, Vec::new()),
+            ],
+        );
+        let content = |pos| Cut {
+            pos,
+            kind: CutKind::Content,
+        };
+        assert_eq!(p.row_cuts(0), Some(vec![content(3), fixed(5)]));
+        assert_eq!(p.row_cuts(1), Some(vec![content(3)]));
+        assert_eq!(p.row_cuts(2), None);
+        // Without a state (chatml) only the cuts of the branch are there, unshifted.
+        let q = Prompt::new(
+            Vec::new(),
+            vec![Branch::with_cuts(
+                vec![1, 2, 3],
+                2,
+                Vec::new(),
+                vec![fixed(1)],
+            )],
+        );
+        assert_eq!(q.row_cuts(0), Some(vec![fixed(1)]));
     }
 }

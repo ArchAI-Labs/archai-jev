@@ -13,7 +13,37 @@ from ._answers import Answers, build_answers
 from ._exceptions import InvalidQuestionError
 from ._questions import Choice, Score, YesNo
 
-__all__ = ["Jev", "ModelInfo", "list_models"]
+__all__ = ["CacheInfo", "Jev", "ModelInfo", "list_models"]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CacheInfo:
+    """What a model's memory of reused prefixes holds and has done. Immutable and hashable.
+
+    The memory keeps the part of a prompt that questions share (the fixed part of a task, and the
+    state when it is asked about again) so it is not computed twice. Everything is zero when
+    ``prefix_cache_mib=0`` and for the test scorer. The counters add up over the life of the model
+    until the model is loaded again.
+
+    Attributes:
+        limit_bytes: The most memory the saved prefixes may take.
+        bytes: Memory they take now.
+        entries: How many saved prefixes there are now.
+        hits: Requests that restored a saved prefix.
+        misses: Requests that looked for one and found none.
+        evictions: Saved prefixes removed to make room.
+        tokens_reused: Tokens that were not computed because they were shared or restored.
+        tokens_decoded: Tokens the model computed.
+    """
+
+    limit_bytes: int
+    bytes: int
+    entries: int
+    hits: int
+    misses: int
+    evictions: int
+    tokens_reused: int
+    tokens_decoded: int
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -126,6 +156,7 @@ class Jev:
         cache_dir: str | os.PathLike[str] | None = None,
         offline: bool = False,
         manifest: str | os.PathLike[str] | None = None,
+        prefix_cache_mib: int | None = None,
     ) -> Jev:
         """Load a model: the default one, a model of the registry, or a local folder.
 
@@ -147,6 +178,11 @@ class Jev:
                 ``ARCHAI_JEV_CACHE``).
             offline: Never open a network connection.
             manifest: The manifest file of a local folder, if it is not in the folder.
+            prefix_cache_mib: Memory, in MiB, for reusing what questions share (the fixed part of
+                a task, and the state when several questions are asked about it). ``None`` uses
+                ``ARCHAI_JEV_PREFIX_CACHE_MIB`` or 128; ``0`` turns the reuse off and decodes every
+                question whole, as 0.1.0 did. Answers are the same within the tolerances of the
+                model; asking many questions about one state is much faster.
 
         Raises:
             IncompatibleModelError: The model cannot be trusted: bad manifest, wrong file, no
@@ -174,6 +210,20 @@ class Jev:
         ):
             if not isinstance(flag, bool):
                 raise TypeError(f"{label} must be a bool, got {type(flag).__name__}")
+        if prefix_cache_mib is not None:
+            if isinstance(prefix_cache_mib, bool) or not isinstance(
+                prefix_cache_mib, int
+            ):
+                raise TypeError(
+                    "prefix_cache_mib must be an int or None, "
+                    f"got {type(prefix_cache_mib).__name__}"
+                )
+            if prefix_cache_mib < 0:
+                raise ValueError(
+                    f"prefix_cache_mib must be 0 or more, got {prefix_cache_mib}"
+                )
+            if prefix_cache_mib >= 2**64:
+                raise ValueError(f"prefix_cache_mib is too large: {prefix_cache_mib}")
         if name_or_path is None:
             kind, value_ = "default", None
         elif isinstance(name_or_path, str):
@@ -204,6 +254,7 @@ class Jev:
             path_or_none("cache_dir", cache_dir),
             offline,
             path_or_none("manifest", manifest),
+            prefix_cache_mib,
         )
         return cls._create(model, _info(raw))
 
@@ -236,6 +287,24 @@ class Jev:
     def model_info(self) -> ModelInfo:
         """Facts about the loaded model."""
         return self._info
+
+    def cache_info(self) -> CacheInfo:
+        """The memory of reused prefixes: its limit, what it holds and what it saved.
+
+        Reading it is cheap and does not change anything. Everything is zero when the memory is
+        off (``prefix_cache_mib=0``).
+        """
+        return CacheInfo(
+            **dict(zip(CacheInfo.__slots__, self._model.cache_info(), strict=True))
+        )
+
+    def clear_cache(self) -> None:
+        """Forget every saved prefix (the counters of :meth:`cache_info` stay).
+
+        Answers never change because of it: the next requests only start from scratch. Use it to
+        free memory, or if the texts you asked about are private and must not stay in memory.
+        """
+        self._model.clear_cache()
 
     def ask(self, state: Any, questions: Mapping[str, Any]) -> Answers:
         """Ask every question about ``state``; all or nothing.

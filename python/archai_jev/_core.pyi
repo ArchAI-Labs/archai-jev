@@ -88,6 +88,12 @@ class _Model:
     def from_mock(scorer: MockScorer) -> _Model:
         """A model backed by the mock scorer."""
 
+    def cache_info(self) -> tuple[int, int, int, int, int, int, int, int]:
+        """(limit_bytes, bytes, entries, hits, misses, evictions, tokens_reused, tokens_decoded)."""
+
+    def clear_cache(self) -> None:
+        """Forget every saved prefix; never changes a result."""
+
     def ask(
         self, state: Any, questions: Sequence[tuple[str, _Question]]
     ) -> list[tuple[Any, ...]]:
@@ -109,6 +115,7 @@ def load_model(
     cache_dir: str | None,
     offline: bool,
     manifest: str | None,
+    prefix_cache_mib: int | None,
 ) -> tuple[_Model, dict[str, Any]]:
     """Load a model: ``kind`` is "default", "path" or "str"; returns the model and its facts."""
 

@@ -3,6 +3,11 @@
 //! Its numbers are a function of the **whole prefix** of the row (state + branch up to the
 //! position read), so if a question ever saw tokens of another question, or the state changed, the
 //! numbers would change and a test would notice. It counts what it is asked to do.
+//!
+//! With [`FakeForward::partition_sensitive`] the numbers also depend on **how the row was split**
+//! into decodes (as the real engine's do, by summation order): a test that says "the result is
+//! bit-identical whatever the cache did" can then fail, instead of passing for lack of any
+//! difference to see.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -13,7 +18,7 @@
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use super::{Forward, Output, OutputSpec, Session};
+use super::{Forward, Output, OutputSpec, Session, Snapshot};
 use crate::error::{Error, Result};
 
 /// What the fake was asked to do.
@@ -23,7 +28,7 @@ pub struct Stats {
     pub sessions: usize,
     /// Rows run.
     pub rows: usize,
-    /// Tokens decoded: state once per session plus every branch.
+    /// Tokens decoded: state once per session plus every branch (and every `extend`).
     pub decoded_tokens: usize,
     /// Output positions read.
     pub outputs: usize,
@@ -31,6 +36,12 @@ pub struct Stats {
     pub seen_rows: Vec<Vec<u32>>,
     /// The output specs of every row, in order.
     pub seen_outputs: Vec<Vec<OutputSpec>>,
+    /// The sizes of the decodes of every row, shared part included, in order.
+    pub seen_segments: Vec<Vec<usize>>,
+    /// Snapshots taken.
+    pub snapshots: usize,
+    /// Snapshots restored.
+    pub restores: usize,
 }
 
 /// A fault to inject.
@@ -42,14 +53,23 @@ pub struct Faults {
     pub nan_row: Option<usize>,
     /// Pause this long in every row (to test that the GIL is released).
     pub latency: Duration,
+    /// Fail every `restore` with an engine error.
+    pub fail_restore: bool,
 }
 
 /// The fake model.
 pub struct FakeForward {
     dim: usize,
+    sensitive: bool,
     lock: Mutex<()>,
     stats: Mutex<Stats>,
     faults: Mutex<Faults>,
+}
+
+/// What a snapshot of the fake holds: the shared ids and how they were decoded.
+struct FakeState {
+    ids: Vec<u32>,
+    sizes: Vec<usize>,
 }
 
 fn mix(mut x: u64) -> u64 {
@@ -68,15 +88,30 @@ fn unit(h: u64) -> f32 {
     ((h >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
 }
 
+/// A number that depends on the sizes of the decodes of the row.
+fn partition_salt(sizes: &[usize]) -> u64 {
+    sizes
+        .iter()
+        .fold(0x0f0f_f0f0_1234_4321u64, |h, &s| mix(h ^ s as u64))
+}
+
 impl FakeForward {
     /// A fake with hidden states of `dim` values.
     pub fn new(dim: usize) -> Self {
         FakeForward {
             dim,
+            sensitive: false,
             lock: Mutex::new(()),
             stats: Mutex::new(Stats::default()),
             faults: Mutex::new(Faults::default()),
         }
+    }
+
+    /// Make the numbers depend on how each row was split into decodes.
+    #[must_use]
+    pub fn partition_sensitive(mut self) -> Self {
+        self.sensitive = true;
+        self
     }
 
     /// Replace the faults.
@@ -95,37 +130,68 @@ impl FakeForward {
     }
 
     /// The hidden state this fake returns at the end of `prefix` (exposed so a test can compute
-    /// the expected answer independently of the engine plumbing).
+    /// the expected answer independently of the engine plumbing). Not for a
+    /// [`partition_sensitive`](Self::partition_sensitive) fake: see [`Self::hidden_split`].
     pub fn hidden_of(&self, prefix: &[u32]) -> Vec<f32> {
-        let h = hash_prefix(prefix);
-        (0..self.dim).map(|j| unit(mix(h ^ j as u64))).collect()
+        self.hidden_with(prefix, 0)
     }
 
     /// The logit this fake returns for `id` at the end of `prefix`.
     pub fn logit_of(&self, prefix: &[u32], id: u32) -> f32 {
-        unit(mix(hash_prefix(prefix) ^ u64::from(id) ^ 0xabcd)) * 4.0
+        self.logit_with(prefix, id, 0)
+    }
+
+    /// The hidden state a partition-sensitive fake returns at the end of `prefix` when the row
+    /// was decoded in decodes of `sizes` tokens.
+    pub fn hidden_split(&self, prefix: &[u32], sizes: &[usize]) -> Vec<f32> {
+        self.hidden_with(prefix, self.salt(sizes))
+    }
+
+    fn salt(&self, sizes: &[usize]) -> u64 {
+        if self.sensitive {
+            partition_salt(sizes)
+        } else {
+            0
+        }
+    }
+
+    fn hidden_with(&self, prefix: &[u32], salt: u64) -> Vec<f32> {
+        let h = hash_prefix(prefix) ^ salt;
+        (0..self.dim).map(|j| unit(mix(h ^ j as u64))).collect()
+    }
+
+    fn logit_with(&self, prefix: &[u32], id: u32, salt: u64) -> f32 {
+        unit(mix(hash_prefix(prefix) ^ salt ^ u64::from(id) ^ 0xabcd)) * 4.0
     }
 }
 
 struct FakeSession<'a> {
     owner: &'a FakeForward,
+    /// The shared ids and the sizes of the decodes that produced them.
     state: Vec<u32>,
+    sizes: Vec<usize>,
     _guard: MutexGuard<'a, ()>,
 }
 
-impl Session for FakeSession<'_> {
-    fn row(&mut self, branch: &[u32], outputs: &[OutputSpec]) -> Result<Vec<Output>> {
+impl FakeSession<'_> {
+    fn run(&mut self, segments: &[&[u32]], outputs: &[OutputSpec]) -> Result<Vec<Output>> {
         let faults = self.owner.faults.lock().unwrap().clone();
+        let mut full = self.state.clone();
+        let mut sizes = self.sizes.clone();
+        for s in segments {
+            full.extend_from_slice(s);
+            sizes.push(s.len());
+        }
+        let branch_len = full.len() - self.state.len();
         let global_row = {
             let mut s = self.owner.stats.lock().unwrap();
             let idx = s.rows;
             s.rows += 1;
-            s.decoded_tokens += branch.len();
+            s.decoded_tokens += branch_len;
             s.outputs += outputs.len();
-            let mut row = self.state.clone();
-            row.extend_from_slice(branch);
-            s.seen_rows.push(row);
+            s.seen_rows.push(full.clone());
             s.seen_outputs.push(outputs.to_vec());
+            s.seen_segments.push(sizes.clone());
             idx
         };
         if !faults.latency.is_zero() {
@@ -136,15 +202,14 @@ impl Session for FakeSession<'_> {
                 detail: "injected fault".to_string(),
             });
         }
-        let mut full = self.state.clone();
-        full.extend_from_slice(branch);
+        let salt = self.owner.salt(&sizes);
         let base = self.state.len();
         let mut out = Vec::with_capacity(outputs.len());
         for spec in outputs {
             match spec {
                 OutputSpec::Hidden { position } => {
                     let prefix = full.get(..=base + position).unwrap_or(&full);
-                    let mut h = self.owner.hidden_of(prefix);
+                    let mut h = self.owner.hidden_with(prefix, salt);
                     if faults.nan_row == Some(global_row) {
                         h[0] = f32::NAN;
                         return Err(Error::NonFiniteHidden {
@@ -159,7 +224,7 @@ impl Session for FakeSession<'_> {
                     let prefix = full.get(..=base + position).unwrap_or(&full);
                     out.push(Output::Logits(
                         ids.iter()
-                            .map(|&id| self.owner.logit_of(prefix, id))
+                            .map(|&id| self.owner.logit_with(prefix, id, salt))
                             .collect(),
                     ));
                 }
@@ -169,18 +234,216 @@ impl Session for FakeSession<'_> {
     }
 }
 
+impl Session for FakeSession<'_> {
+    fn row(&mut self, branch: &[u32], outputs: &[OutputSpec]) -> Result<Vec<Output>> {
+        self.run(&[branch], outputs)
+    }
+
+    fn shared_len(&self) -> usize {
+        self.state.len()
+    }
+
+    fn restore(&mut self, snapshot: &Snapshot) -> Result<()> {
+        if self.owner.faults.lock().unwrap().fail_restore {
+            return Err(Error::Inference {
+                detail: "injected fault: restore".to_string(),
+            });
+        }
+        if !self.state.is_empty() {
+            return Err(Error::Inference {
+                detail: "a snapshot can only be restored on an empty session".to_string(),
+            });
+        }
+        let saved = snapshot
+            .downcast_ref::<FakeState>()
+            .ok_or_else(|| Error::Inference {
+                detail: "the snapshot was not made by this engine".to_string(),
+            })?;
+        self.state = saved.ids.clone();
+        self.sizes = saved.sizes.clone();
+        self.owner.stats.lock().unwrap().restores += 1;
+        Ok(())
+    }
+
+    fn extend(&mut self, tokens: &[u32]) -> Result<()> {
+        if tokens.is_empty() {
+            return Ok(());
+        }
+        self.state.extend_from_slice(tokens);
+        self.sizes.push(tokens.len());
+        self.owner.stats.lock().unwrap().decoded_tokens += tokens.len();
+        Ok(())
+    }
+
+    fn snapshot(&mut self) -> Result<Snapshot> {
+        self.owner.stats.lock().unwrap().snapshots += 1;
+        let tokens = self.state.len();
+        Ok(Snapshot::new(
+            tokens,
+            tokens * 8,
+            FakeState {
+                ids: self.state.clone(),
+                sizes: self.sizes.clone(),
+            },
+        ))
+    }
+
+    fn row_segments(&mut self, segments: &[&[u32]], outputs: &[OutputSpec]) -> Result<Vec<Output>> {
+        self.run(segments, outputs)
+    }
+}
+
 impl Forward for FakeForward {
     fn begin<'a>(&'a self, state: &[u32]) -> Result<Box<dyn Session + 'a>> {
+        let mut session = self.begin_empty()?;
+        session.extend(state)?;
+        Ok(session)
+    }
+
+    fn begin_empty<'a>(&'a self) -> Result<Box<dyn Session + 'a>> {
         let guard = self.lock.lock().unwrap();
-        {
-            let mut s = self.stats.lock().unwrap();
-            s.sessions += 1;
-            s.decoded_tokens += state.len();
-        }
+        self.stats.lock().unwrap().sessions += 1;
         Ok(Box::new(FakeSession {
             owner: self,
-            state: state.to_vec(),
+            state: Vec::new(),
+            sizes: Vec::new(),
             _guard: guard,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec() -> Vec<OutputSpec> {
+        vec![OutputSpec::Hidden { position: 1 }]
+    }
+
+    fn hidden(out: Vec<Output>) -> Vec<f32> {
+        match out.into_iter().next() {
+            Some(Output::Hidden(h)) => h,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn begin_and_row_behave_as_before() {
+        let f = FakeForward::new(4);
+        let mut s = f.begin(&[1, 2, 3]).unwrap();
+        let got = hidden(s.row(&[4, 5], &spec()).unwrap());
+        assert_eq!(got, f.hidden_of(&[1, 2, 3, 4, 5][..=4]));
+        let st = f.stats();
+        assert_eq!((st.sessions, st.rows, st.decoded_tokens), (1, 1, 5));
+        assert_eq!(st.seen_rows, vec![vec![1, 2, 3, 4, 5]]);
+    }
+
+    #[test]
+    fn restore_then_extend_equals_extending_the_whole_prefix_when_the_split_is_the_same() {
+        let f = FakeForward::new(4).partition_sensitive();
+        // Cold: the prefix is decoded as [2, 2], then the tail.
+        let mut cold = f.begin_empty().unwrap();
+        cold.extend(&[1, 2]).unwrap();
+        cold.extend(&[3, 4]).unwrap();
+        let snap = cold.snapshot().unwrap();
+        let cold_out = hidden(cold.row_segments(&[&[5, 6]], &spec()).unwrap());
+        drop(cold);
+        // Warm: the same prefix restored, the same tail.
+        let mut warm = f.begin_empty().unwrap();
+        warm.restore(&snap).unwrap();
+        assert_eq!(warm.shared_len(), 4);
+        let warm_out = hidden(warm.row_segments(&[&[5, 6]], &spec()).unwrap());
+        drop(warm);
+        assert_eq!(cold_out, warm_out);
+        // Restoring decodes nothing: 4 + 2 for the cold session, 2 for the warm one.
+        assert_eq!(f.stats().decoded_tokens, 4 + 2 + 2);
+        assert_eq!((f.stats().snapshots, f.stats().restores), (1, 1));
+        // The same ids split another way give other numbers: the fake sees the partition.
+        let mut other = f.begin_empty().unwrap();
+        other.extend(&[1, 2, 3, 4]).unwrap();
+        let other_out = hidden(other.row_segments(&[&[5, 6]], &spec()).unwrap());
+        assert_ne!(cold_out, other_out);
+        // A fake that is not sensitive does not tell them apart.
+        let plain = FakeForward::new(4);
+        let a = {
+            let mut s = plain.begin_empty().unwrap();
+            s.extend(&[1, 2]).unwrap();
+            s.extend(&[3, 4]).unwrap();
+            hidden(s.row_segments(&[&[5, 6]], &spec()).unwrap())
+        };
+        let b = {
+            let mut s = plain.begin_empty().unwrap();
+            s.extend(&[1, 2, 3, 4]).unwrap();
+            hidden(s.row_segments(&[&[5, 6]], &spec()).unwrap())
+        };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn a_row_in_segments_is_the_split_of_its_tail_too() {
+        let f = FakeForward::new(4).partition_sensitive();
+        let mut s = f.begin_empty().unwrap();
+        s.extend(&[1, 2]).unwrap();
+        let whole = hidden(s.row_segments(&[&[3, 4, 5]], &spec()).unwrap());
+        let split = hidden(s.row_segments(&[&[3], &[4, 5]], &spec()).unwrap());
+        assert_ne!(whole, split);
+        assert_eq!(f.stats().seen_segments, vec![vec![2, 3], vec![2, 1, 2]]);
+        // Both rows saw the same ids.
+        assert_eq!(f.stats().seen_rows[0], f.stats().seen_rows[1]);
+    }
+
+    #[test]
+    fn restore_needs_an_empty_session_and_a_snapshot_of_this_engine() {
+        let f = FakeForward::new(4);
+        let mut s = f.begin_empty().unwrap();
+        s.extend(&[1, 2]).unwrap();
+        let snap = s.snapshot().unwrap();
+        assert!(matches!(s.restore(&snap), Err(Error::Inference { .. })));
+        drop(s);
+
+        let mut empty = f.begin_empty().unwrap();
+        let foreign = Snapshot::new(2, 16, "another engine");
+        let err = empty.restore(&foreign).unwrap_err();
+        assert!(err.to_string().contains("not made by this engine"), "{err}");
+        // The session is still usable.
+        empty.restore(&snap).unwrap();
+        assert_eq!(empty.shared_len(), 2);
+    }
+
+    #[test]
+    fn fail_restore_is_an_engine_error_and_the_session_stays_empty() {
+        let f = FakeForward::new(4);
+        let mut s = f.begin_empty().unwrap();
+        s.extend(&[1, 2]).unwrap();
+        let snap = s.snapshot().unwrap();
+        drop(s);
+        f.set_faults(Faults {
+            fail_restore: true,
+            ..Faults::default()
+        });
+        let mut s = f.begin_empty().unwrap();
+        assert!(matches!(s.restore(&snap), Err(Error::Inference { .. })));
+        assert_eq!(s.shared_len(), 0);
+    }
+
+    #[test]
+    fn snapshot_reports_its_tokens_and_bytes() {
+        let f = FakeForward::new(4);
+        let mut s = f.begin_empty().unwrap();
+        s.extend(&[1, 2, 3]).unwrap();
+        let snap = s.snapshot().unwrap();
+        assert_eq!((snap.tokens(), snap.bytes()), (3, 24));
+        assert_eq!(snap.clone().tokens(), 3);
+    }
+
+    #[test]
+    fn the_fake_records_only_ids_and_positions() {
+        // No text can reach the engine: everything recorded is `u32` ids, `usize` sizes and specs.
+        let f = FakeForward::new(2);
+        let mut s = f.begin(&[1]).unwrap();
+        s.row(&[2, 3], &spec()).unwrap();
+        let st = f.stats();
+        let _: &Vec<Vec<u32>> = &st.seen_rows;
+        let _: &Vec<Vec<usize>> = &st.seen_segments;
     }
 }

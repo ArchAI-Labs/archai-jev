@@ -144,15 +144,18 @@ calibration, self-check vectors). Models of your own go through a manifest, neve
 code. Files are verified by SHA-256 before use; the cache folder is `ARCHAI_JEV_CACHE` or the OS
 default (`~/.cache/archai-jev`, `~/Library/Caches/archai-jev`, `%LOCALAPPDATA%\archai-jev\Cache`).
 Environment variables: `ARCHAI_JEV_CACHE`, `ARCHAI_JEV_OFFLINE` / `HF_HUB_OFFLINE`,
-`ARCHAI_JEV_HF_ENDPOINT` / `HF_ENDPOINT`, `ARCHAI_JEV_NUM_THREADS`.
+`ARCHAI_JEV_HF_ENDPOINT` / `HF_ENDPOINT`, `ARCHAI_JEV_NUM_THREADS`, `ARCHAI_JEV_PREFIX_CACHE_MIB`.
+
+The part of a prompt that questions share is computed once and kept in memory (see
+[docs/prefix-cache.md](docs/prefix-cache.md)): `Jev.from_pretrained(prefix_cache_mib=0)` turns it off,
+`jev.cache_info()` shows what it holds.
 
 ## Known limits of 0.1.0
 
 - CPU only; no GPU.
 - One model ships (the demo above). Kev checkpoints and models of your own with a "pointer" head
   are not loadable yet; the engine and the head are implemented and tested, the file reader is not.
-- One request at a time per `Jev` (calls from several threads wait their turn); no prefix cache
-  between requests.
+- One request at a time per `Jev` (calls from several threads wait their turn).
 - `fit_temperature` and an evaluation API are planned, not in this release.
 - **No performance claims are made.** Speed and memory were measured on a single machine during
   development and will be published once they are reproduced on a second one.

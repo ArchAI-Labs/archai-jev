@@ -97,14 +97,14 @@ fn number(j: &Json) -> f64 {
     }
 }
 
-fn run(dtype: &str) {
+fn run(dtype: &str, cache_mib: u64) {
     let cache = tempfile::tempdir().unwrap();
     populate(cache.path());
     let registry = Registry::builtin().unwrap();
     let mut hub = HubConfig::new(cache.path().to_path_buf());
     hub.offline = true;
     let threads = _core::models::llama_backend::default_threads();
-    let backend = LlamaBackend::new(threads);
+    let backend = LlamaBackend::new(threads).with_prefix_cache(cache_mib << 20);
     let recorder = Recorder::default();
     let ctx = Context {
         registry,
@@ -143,118 +143,141 @@ fn run(dtype: &str) {
     cases.extend(golden::load("golden_extra.jsonl"));
     assert_eq!(cases.len(), 69);
 
-    let mut worst = [Worst::default(); 4];
-    let mut refused = 0;
-    let (mut argmax_checked, mut near_ties, mut argmax_flipped) = (0, 0, 0);
-    let mut longest_ok = 0;
-    for case in &cases {
-        let (state, questions) = match golden::request_to_domain(&case.request) {
-            Ok(x) => x,
-            Err(_) => {
-                refused += 1;
-                continue;
-            }
-        };
-        let answers = _core::ask(loaded.scorer.as_ref(), &state, &questions)
-            .unwrap_or_else(|e| panic!("{dtype}: {}: {e}", case.id));
-        let logits = loaded.scorer.score(&state, &questions).unwrap();
-        longest_ok = longest_ok.max(case.ids.len());
-        let w = &mut worst[band(case.state_len)];
-        for ((golden_q, z), (name, answer)) in
-            case.questions.iter().zip(&logits).zip(answers.iter())
-        {
-            assert_eq!(name, golden_q.name);
-            assert_eq!(z.len(), golden_q.logits_raw.len(), "{}: {name}", case.id);
-            w.n += 1;
-            for (zz, g) in z.iter().zip(&golden_q.logits_raw) {
-                w.logit = w
-                    .logit
-                    .max((zz / case.temperature - g / case.temperature).abs());
-            }
-            let p = calibrated_softmax(z, case.temperature).unwrap();
-            for (a, b) in p.iter().zip(&golden_q.probs) {
-                w.prob = w.prob.max((a - b).abs());
-            }
-            // the argmax, except where the golden itself has a near tie
-            if golden_q.kind != "score" && golden_q.probs.len() > 1 {
-                let mut sorted = golden_q.probs.clone();
-                sorted.sort_by(|a, b| b.partial_cmp(a).unwrap());
-                let top = |v: &[f64]| {
-                    v.iter()
-                        .enumerate()
-                        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                        .unwrap()
-                        .0
-                };
-                argmax_checked += 1;
-                if sorted[0] - sorted[1] < 3e-2 {
-                    near_ties += 1;
-                } else if top(&p) != top(&golden_q.probs) {
-                    argmax_flipped += 1;
-                    println!("  argmax differs: {} / {name}", case.id);
+    // With the reuse on the golden goes through twice: the second pass is warm and must give
+    // the very same numbers as the first, besides the parity with the reference.
+    let passes = if cache_mib > 0 { 2 } else { 1 };
+    let mut first: Vec<Vec<Vec<f64>>> = Vec::new();
+    for pass in 0..passes {
+        let mut seen: Vec<Vec<Vec<f64>>> = Vec::new();
+
+        let mut worst = [Worst::default(); 4];
+        let mut refused = 0;
+        let (mut argmax_checked, mut near_ties, mut argmax_flipped) = (0, 0, 0);
+        let mut longest_ok = 0;
+        for case in &cases {
+            let (state, questions) = match golden::request_to_domain(&case.request) {
+                Ok(x) => x,
+                Err(_) => {
+                    refused += 1;
+                    continue;
                 }
-            }
-            match answer {
-                Answer::Choice(c) => {
-                    w.choice_confidence = w
-                        .choice_confidence
-                        .max((c.confidence() - golden_q.confidence).abs());
+            };
+            let answers = _core::ask(loaded.scorer.as_ref(), &state, &questions)
+                .unwrap_or_else(|e| panic!("{dtype}: {}: {e}", case.id));
+            let logits = loaded.scorer.score(&state, &questions).unwrap();
+            seen.push(logits.clone());
+            longest_ok = longest_ok.max(case.ids.len());
+            let w = &mut worst[band(case.state_len)];
+            for ((golden_q, z), (name, answer)) in
+                case.questions.iter().zip(&logits).zip(answers.iter())
+            {
+                assert_eq!(name, golden_q.name);
+                assert_eq!(z.len(), golden_q.logits_raw.len(), "{}: {name}", case.id);
+                w.n += 1;
+                for (zz, g) in z.iter().zip(&golden_q.logits_raw) {
+                    w.logit = w
+                        .logit
+                        .max((zz / case.temperature - g / case.temperature).abs());
                 }
-                Answer::Score(s) => {
-                    w.score_confidence = w
-                        .score_confidence
-                        .max((s.confidence() - golden_q.confidence).abs());
-                    w.score_value = w
-                        .score_value
-                        .max((s.value() - number(&golden_q.value)).abs());
+                let p = calibrated_softmax(z, case.temperature).unwrap();
+                for (a, b) in p.iter().zip(&golden_q.probs) {
+                    w.prob = w.prob.max((a - b).abs());
                 }
-                Answer::YesNo(_) => {}
+                // the argmax, except where the golden itself has a near tie
+                if golden_q.kind != "score" && golden_q.probs.len() > 1 {
+                    let mut sorted = golden_q.probs.clone();
+                    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap());
+                    let top = |v: &[f64]| {
+                        v.iter()
+                            .enumerate()
+                            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                            .unwrap()
+                            .0
+                    };
+                    argmax_checked += 1;
+                    if sorted[0] - sorted[1] < 3e-2 {
+                        near_ties += 1;
+                    } else if top(&p) != top(&golden_q.probs) {
+                        argmax_flipped += 1;
+                        println!("  argmax differs: {} / {name}", case.id);
+                    }
+                }
+                match answer {
+                    Answer::Choice(c) => {
+                        w.choice_confidence = w
+                            .choice_confidence
+                            .max((c.confidence() - golden_q.confidence).abs());
+                    }
+                    Answer::Score(s) => {
+                        w.score_confidence = w
+                            .score_confidence
+                            .max((s.confidence() - golden_q.confidence).abs());
+                        w.score_value = w
+                            .score_value
+                            .max((s.value() - number(&golden_q.value)).abs());
+                    }
+                    Answer::YesNo(_) => {}
+                }
             }
         }
-    }
-    println!("{dtype}: {refused} requests refused on purpose, longest prompt {longest_ok} tokens");
-    println!(
-        "{dtype}: argmax checked {argmax_checked}, near ties {near_ties}, flipped {argmax_flipped}"
-    );
-    for (i, label) in ["< 100", "100-400", "400-3000", "> 3000"]
-        .iter()
-        .enumerate()
-    {
-        let w = worst[i];
         println!(
-            "{dtype}: state {label:>9} tokens, {:3} questions: max |d(z/T)| {:.2e}  |dp| {:.2e}  conf choice {:.2e}  conf score {:.2e}  value score {:.2e}",
-            w.n, w.logit, w.prob, w.choice_confidence, w.score_confidence, w.score_value
+            "{dtype}: {refused} requests refused on purpose, longest prompt {longest_ok} tokens"
         );
-    }
-    assert_eq!(refused, 8, "the requests the library refuses on purpose");
-    assert_eq!(argmax_flipped, 0);
-    for w in worst {
-        assert!(w.logit <= 6e-2, "|d(z/T)| {}", w.logit);
-        assert!(w.prob <= 1.5e-2, "|dp| {}", w.prob);
-        assert!(
-            w.choice_confidence <= 2.5e-2,
-            "choice confidence {}",
-            w.choice_confidence
+        println!(
+            "{dtype}: argmax checked {argmax_checked}, near ties {near_ties}, flipped {argmax_flipped}"
         );
-        assert!(
-            w.score_confidence <= 1e-2,
-            "score confidence {}",
-            w.score_confidence
-        );
-        assert!(w.score_value <= 1e-2, "score value {}", w.score_value);
+        for (i, label) in ["< 100", "100-400", "400-3000", "> 3000"]
+            .iter()
+            .enumerate()
+        {
+            let w = worst[i];
+            println!(
+                "{dtype}: state {label:>9} tokens, {:3} questions: max |d(z/T)| {:.2e}  |dp| {:.2e}  conf choice {:.2e}  conf score {:.2e}  value score {:.2e}",
+                w.n, w.logit, w.prob, w.choice_confidence, w.score_confidence, w.score_value
+            );
+        }
+        assert_eq!(refused, 8, "the requests the library refuses on purpose");
+        assert_eq!(argmax_flipped, 0);
+        for w in worst {
+            assert!(w.logit <= 6e-2, "|d(z/T)| {}", w.logit);
+            assert!(w.prob <= 1.5e-2, "|dp| {}", w.prob);
+            assert!(
+                w.choice_confidence <= 2.5e-2,
+                "choice confidence {}",
+                w.choice_confidence
+            );
+            assert!(
+                w.score_confidence <= 1e-2,
+                "score confidence {}",
+                w.score_confidence
+            );
+            assert!(w.score_value <= 1e-2, "score value {}", w.score_value);
+        }
+        if pass == 0 {
+            first = seen;
+        } else {
+            assert_eq!(
+                first, seen,
+                "{dtype}: the warm pass must equal the cold one bit for bit"
+            );
+        }
+        if let Some(info) = loaded.scorer.cache_info() {
+            println!("{dtype}: pass {pass}: {info:?}");
+            assert!(info.bytes <= info.limit_bytes);
+        }
     }
 }
 
 #[test]
 #[ignore = "needs the original files of Kev-0.8B (1.8 GB): see the header of this file"]
 fn kev_bf16_matches_the_golden() {
-    run("bf16");
+    run("bf16", 0);
 }
 
 #[test]
 #[ignore = "needs the original files of Kev-0.8B (1.8 GB): see the header of this file"]
 fn kev_f32_matches_the_golden() {
-    run("f32");
+    run("f32", 0);
 }
 
 /// Every deliberate mistake of the converter makes the self-check of the registry fail on the
@@ -319,4 +342,16 @@ fn each_converter_mutant_is_stopped_by_the_selfcheck() {
             Ok(_) => panic!("{mutant:?}: the self-check did not notice"),
         }
     }
+}
+
+#[test]
+#[ignore = "needs the original files of Kev-0.8B (1.8 GB): see the header of this file"]
+fn kev_bf16_matches_the_golden_with_the_prefix_cache() {
+    run("bf16", 128);
+}
+
+#[test]
+#[ignore = "needs the original files of Kev-0.8B (1.8 GB): see the header of this file"]
+fn kev_f32_matches_the_golden_with_the_prefix_cache() {
+    run("f32", 128);
 }

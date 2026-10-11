@@ -30,6 +30,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   played by the model; `001` to `007` teach one concept each: the four tasks and typed answers,
   a grounding check, a duplicate finder, every error the library raises on purpose, calibration
   and `temperature=`, async (`aask_many`), and testing your own code with `MockScorer`.
+- **Reuse of what questions share.** The fixed block of a task and, when the template puts it
+  first, the state are computed once and kept in memory: inside one `ask` and between calls, per
+  loaded model, limited in bytes (least recently used out first). `Jev.from_pretrained(prefix_cache_mib=...)`
+  (default 128, environment variable `ARCHAI_JEV_PREFIX_CACHE_MIB`, `0` turns it off),
+  `Jev.cache_info()` returning a `CacheInfo`, `Jev.clear_cache()`. See `docs/prefix-cache.md`.
+  The key of a saved prefix includes the model revision, the GGUF hash, the template id and
+  version, the tokenizer hash and the engine settings; a prefix that cannot be restored raises
+  `InferenceError` and is dropped. No new dependency; the wheel grows by less than 1 %.
+
+### Changed
+- Prompts of the default model are now computed in segments (at the end of the task block and of
+  the state) instead of in one pass. Answers stay within the tolerances of the model: on the golden
+  prompts the largest difference from 0.1.0 was 0.48 on a raw logit and 0.033 on a probability,
+  and no top answer changed. With the memory empty, warm or cleared the answers are identical bit
+  for bit. `prefix_cache_mib=0` restores the 0.1.0 computation. A request with a single question
+  about a text of a task never seen costs a little more than before (the prefix is saved).
 
 ## [0.1.0] - 2026-10-06
 

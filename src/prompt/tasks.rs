@@ -32,6 +32,26 @@ impl Layout {
         }
     }
 
+    /// The fixed text of the user part up to the state (`State:` / `State A:`): what a cut of
+    /// kind `Fixed` ends at. [`Layout::render`] is `head_text`, a space and the state.
+    pub fn head_text(self) -> &'static str {
+        match self {
+            Layout::State | Layout::StateCondition => "State:",
+            Layout::StatePair => "State A:",
+        }
+    }
+
+    /// The fixed text right after the state (`\nCondition:` / `\nState B:`), `None` when the
+    /// state is the last variable part (`Layout::State`: nothing worth a cut after it). The text
+    /// that follows starts with a space, so the cut sits on a token boundary in practice.
+    pub fn state_end_text(self) -> Option<&'static str> {
+        match self {
+            Layout::State => None,
+            Layout::StateCondition => Some("\nCondition:"),
+            Layout::StatePair => Some("\nState B:"),
+        }
+    }
+
     /// The user text after `user\n`, with `state` and `instructions` already sanitized.
     pub fn render(self, state: &str, instructions: &str) -> String {
         match self {

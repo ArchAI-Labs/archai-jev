@@ -21,6 +21,10 @@ pub struct ValidatedCheckpoint {
     pub dtype: String,
     /// The verified GGUF file.
     pub model_path: PathBuf,
+    /// SHA-256 of that GGUF (of the converted file for a converted model).
+    pub model_sha256: String,
+    /// SHA-256 of the canonical manifest: the identity of the model and its revision.
+    pub manifest_sha256: String,
     /// The verified `tokenizer.json`.
     pub tokenizer_path: PathBuf,
     /// The head weights file, for pointer heads.

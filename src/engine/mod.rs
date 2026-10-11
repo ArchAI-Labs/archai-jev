@@ -15,6 +15,9 @@ pub mod cpu;
 pub mod fake;
 pub mod llama;
 
+use std::any::Any;
+use std::sync::Arc;
+
 use crate::error::{Error, Result};
 
 /// What to read from a row of the model. More kinds can be added without touching the engine.
@@ -45,6 +48,58 @@ pub enum Output {
     Logits(Vec<f32>),
 }
 
+/// The shared part of a request, saved so a later request can start from it without decoding it
+/// again (spec 007). Opaque: only the engine that made it can restore it. It owns its bytes and
+/// is cheap to clone (a reference count).
+#[derive(Clone)]
+pub struct Snapshot {
+    tokens: usize,
+    bytes: usize,
+    inner: Arc<dyn Any + Send + Sync>,
+}
+
+impl Snapshot {
+    /// Wrap an engine's own saved state: `tokens` positions that take `bytes` bytes of memory.
+    pub fn new<T: Any + Send + Sync>(tokens: usize, bytes: usize, state: T) -> Self {
+        Snapshot {
+            tokens,
+            bytes,
+            inner: Arc::new(state),
+        }
+    }
+
+    /// How many positions (tokens) the snapshot holds.
+    pub fn tokens(&self) -> usize {
+        self.tokens
+    }
+
+    /// Memory it takes, in bytes.
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// The engine's own state, if it is of type `T` (an engine asks for its own type; any other
+    /// snapshot is refused).
+    pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        self.inner.downcast_ref::<T>()
+    }
+}
+
+impl std::fmt::Debug for Snapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Snapshot")
+            .field("tokens", &self.tokens)
+            .field("bytes", &self.bytes)
+            .finish_non_exhaustive()
+    }
+}
+
+fn no_segments() -> Error {
+    Error::Inference {
+        detail: "this engine does not decode a row in segments".to_string(),
+    }
+}
+
 /// One request being answered: the state is already decoded and kept.
 pub trait Session {
     /// Run one question: decode `branch` after the state, on a copy that is discarded, and return
@@ -54,6 +109,50 @@ pub trait Session {
     /// # Errors
     /// [`crate::Error::Inference`] if the engine fails; the session stays usable.
     fn row(&mut self, branch: &[u32], outputs: &[OutputSpec]) -> Result<Vec<Output>>;
+
+    /// How many tokens the shared part of the session holds now.
+    fn shared_len(&self) -> usize {
+        0
+    }
+
+    /// Start from a saved shared part. Only on a session that holds nothing yet.
+    ///
+    /// # Errors
+    /// [`crate::Error::Inference`] if the session is not empty, if the snapshot was not made by
+    /// this engine with these parameters, or if the engine cannot load it.
+    fn restore(&mut self, _snapshot: &Snapshot) -> Result<()> {
+        Err(no_segments())
+    }
+
+    /// Decode `tokens` onto the shared part, in one decode, at the positions that follow it.
+    ///
+    /// # Errors
+    /// [`crate::Error::Inference`] if the engine fails.
+    fn extend(&mut self, _tokens: &[u32]) -> Result<()> {
+        Err(no_segments())
+    }
+
+    /// A copy of the shared part as it is now.
+    ///
+    /// # Errors
+    /// [`crate::Error::Inference`] if the engine cannot save it.
+    fn snapshot(&mut self) -> Result<Snapshot> {
+        Err(no_segments())
+    }
+
+    /// Run one question given as consecutive segments after the shared part: one decode **per
+    /// segment**, outputs only from the last. The segments are what the question's own cut points
+    /// define, so the numbers do not depend on what the other questions or a cache did.
+    ///
+    /// # Errors
+    /// [`crate::Error::Inference`] if the engine fails; the session stays usable.
+    fn row_segments(
+        &mut self,
+        _segments: &[&[u32]],
+        _outputs: &[OutputSpec],
+    ) -> Result<Vec<Output>> {
+        Err(no_segments())
+    }
 }
 
 /// A loaded model that can answer requests.
@@ -64,6 +163,15 @@ pub trait Forward: Send + Sync {
     /// # Errors
     /// [`crate::Error::Inference`] if the state cannot be decoded.
     fn begin<'a>(&'a self, state: &[u32]) -> Result<Box<dyn Session + 'a>>;
+
+    /// Start a request with nothing decoded: the shared part is built with
+    /// [`Session::restore`] and [`Session::extend`]. `begin(state)` is this plus `extend(state)`.
+    ///
+    /// # Errors
+    /// [`crate::Error::Inference`] if the engine cannot start (or does not decode in segments).
+    fn begin_empty<'a>(&'a self) -> Result<Box<dyn Session + 'a>> {
+        Err(no_segments())
+    }
 }
 
 /// The logits of `ids` out of a **whole** row of the model's logits (one value per token of the

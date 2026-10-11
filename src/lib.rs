@@ -25,6 +25,7 @@ pub mod json_strict;
 pub mod mock;
 pub mod model_scorer;
 pub mod models;
+pub mod prefix;
 pub mod prompt;
 mod python;
 pub mod request;

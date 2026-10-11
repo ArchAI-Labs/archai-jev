@@ -128,9 +128,30 @@ fn info_dict<'py>(py: Python<'py>, d: &ModelData) -> PyResult<Bound<'py, PyDict>
     Ok(out)
 }
 
+/// Memory of the prefix cache when nobody says otherwise, in MiB.
+const DEFAULT_PREFIX_CACHE_MIB: u64 = 128;
+
+/// The prefix cache limit in bytes: the argument, else `ARCHAI_JEV_PREFIX_CACHE_MIB` (read here,
+/// once per call), else the default. `0` turns the reuse off.
+fn prefix_cache_bytes(prefix_cache_mib: Option<u64>) -> PyResult<u64> {
+    let mib = match prefix_cache_mib {
+        Some(mib) => mib,
+        None => match env("ARCHAI_JEV_PREFIX_CACHE_MIB") {
+            None => DEFAULT_PREFIX_CACHE_MIB,
+            Some(v) => v.trim().parse::<u64>().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "ARCHAI_JEV_PREFIX_CACHE_MIB must be a whole number of MiB (0 turns the cache off), got {v:?}"
+                ))
+            })?,
+        },
+    };
+    mib.checked_mul(1 << 20)
+        .ok_or_else(|| PyValueError::new_err(format!("prefix_cache_mib is too large: {mib} MiB")))
+}
+
 /// Load a model (see `Jev.from_pretrained`). Arguments are already type-checked in Python.
 #[pyfunction]
-#[pyo3(signature = (kind, value, revision, device, dtype, temperature, allow_uncalibrated, cache_dir, offline, manifest))]
+#[pyo3(signature = (kind, value, revision, device, dtype, temperature, allow_uncalibrated, cache_dir, offline, manifest, prefix_cache_mib))]
 #[allow(clippy::too_many_arguments)]
 pub fn load_model<'py>(
     py: Python<'py>,
@@ -144,6 +165,7 @@ pub fn load_model<'py>(
     cache_dir: Option<PathBuf>,
     offline: bool,
     manifest: Option<PathBuf>,
+    prefix_cache_mib: Option<u64>,
 ) -> PyResult<(PyModel, Bound<'py, PyDict>)> {
     let name_or_path = match (kind, value) {
         ("default", _) => NameOrPath::Default,
@@ -166,6 +188,7 @@ pub fn load_model<'py>(
             }
         },
     };
+    let cache_bytes = prefix_cache_bytes(prefix_cache_mib)?;
     let root = cache::resolve_root(cache_dir.as_deref(), &ProcessEnv, Os::current())
         .map_err(Error::ModelDownload)?;
     let mut hub = HubConfig::new(root);
@@ -186,7 +209,7 @@ pub fn load_model<'py>(
         allow_uncalibrated,
     };
     let registry = Registry::builtin().map_err(Error::IncompatibleModel)?;
-    let backend = LlamaBackend::new(threads);
+    let backend = LlamaBackend::new(threads).with_prefix_cache(cache_bytes);
     let transport = UreqTransport::new(&hub);
     let loaded = py.detach(|| {
         let ctx = Context {

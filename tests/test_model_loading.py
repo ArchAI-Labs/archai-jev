@@ -44,6 +44,7 @@ def test_signature_is_the_documented_one() -> None:
         "cache_dir",
         "offline",
         "manifest",
+        "prefix_cache_mib",
     ]
     for name, p in list(sig.parameters.items())[1:]:
         assert p.kind is inspect.Parameter.KEYWORD_ONLY, name

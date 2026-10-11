@@ -3,6 +3,8 @@
 
 pub mod chatml;
 #[cfg(test)]
+mod chatml_cuts_tests;
+#[cfg(test)]
 mod chatml_tests;
 pub mod kev;
 pub mod limits;
@@ -15,7 +17,7 @@ pub mod tokenize;
 pub mod unsupported;
 
 pub use limits::{NoLimits, QuestionSupport, RequestLimits, kind_name};
-pub use prompt::{Branch, Prompt};
+pub use prompt::{Branch, Cut, CutKind, Prompt};
 pub use sanitize::sanitize;
 pub use template::{Template, lookup};
 pub use tokenize::{PromptTokenizer, Roles};

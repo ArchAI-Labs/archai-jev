@@ -18,7 +18,7 @@ from ._exceptions import (
     NumericalError,
     UnsupportedRequestError,
 )
-from ._jev import Jev, ModelInfo, list_models
+from ._jev import CacheInfo, Jev, ModelInfo, list_models
 from ._questions import Choice, Noul, Score, YesNo
 
 JSONValue = str | int | float | bool | None | Mapping[str, Any] | Sequence[Any]
@@ -28,6 +28,7 @@ Question = Choice | Score | YesNo
 __all__ = [
     "Answer",
     "Answers",
+    "CacheInfo",
     "Choice",
     "ChoiceAnswer",
     "IncompatibleModelError",

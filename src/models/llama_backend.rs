@@ -16,18 +16,32 @@ use crate::engine::llama::{LlamaConfig, LlamaForward};
 use crate::error::{Error, Result};
 use crate::heads::{Head, LettersHead, PointerHead};
 use crate::model_scorer::ModelScorer;
+use crate::prefix::{Fingerprint, FingerprintParts};
 use crate::prompt::template::instantiate;
 use crate::prompt::{PromptTokenizer, Roles};
 
 /// The llama.cpp backend.
 pub struct LlamaBackend {
     threads: i32,
+    prefix_cache_bytes: u64,
 }
 
 impl LlamaBackend {
-    /// A backend that decodes with `threads` threads.
+    /// A backend that decodes with `threads` threads and does not reuse what the questions of a
+    /// request share (the behaviour of 0.1.0).
     pub fn new(threads: i32) -> Self {
-        LlamaBackend { threads }
+        LlamaBackend {
+            threads,
+            prefix_cache_bytes: 0,
+        }
+    }
+
+    /// Reuse what the questions of a request share, using at most `bytes` of memory for the
+    /// cache. `0` turns the reuse off.
+    #[must_use]
+    pub fn with_prefix_cache(mut self, bytes: u64) -> Self {
+        self.prefix_cache_bytes = bytes;
+        self
     }
 }
 
@@ -107,20 +121,35 @@ impl Backend for LlamaBackend {
             },
         )?;
 
-        let scorer = Arc::new(ModelScorer::new(
-            m.name.clone(),
-            template,
-            tokenizer,
-            Arc::new(forward),
-            head,
-            checkpoint.calibration.calibration,
-            m.max_context,
-            family
-                .question_types
-                .iter()
-                .map(|t| (*t).to_string())
-                .collect(),
-        ));
+        let engine_text = forward.engine_fingerprint();
+        let fingerprint = Fingerprint::new(&FingerprintParts {
+            model: &checkpoint.manifest_sha256,
+            gguf_sha256: &checkpoint.model_sha256,
+            family: &m.family,
+            dtype: &checkpoint.dtype,
+            template_id: &m.template.id,
+            template_version: m.template.version,
+            tokenizer_sha256: &m.tokenizer.file.sha256,
+            engine: &engine_text,
+        });
+        let scorer = Arc::new(
+            ModelScorer::new(
+                m.name.clone(),
+                template,
+                tokenizer,
+                Arc::new(forward),
+                head,
+                checkpoint.calibration.calibration,
+                m.max_context,
+                family
+                    .question_types
+                    .iter()
+                    .map(|t| (*t).to_string())
+                    .collect(),
+            )
+            .with_fingerprint(fingerprint)
+            .with_prefix_cache(self.prefix_cache_bytes),
+        );
         Ok(Engine {
             scorer: scorer.clone(),
             runner: scorer,

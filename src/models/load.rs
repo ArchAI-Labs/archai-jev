@@ -436,10 +436,17 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
     }
 
     // Stage 7: the engine loads the weights.
+    let model_sha256 = match (&variant.source, &converted_here) {
+        (Source::Gguf { file }, _) => file.sha256.clone(),
+        (_, Some(c)) => c.done.sha256.clone(),
+        _ => String::new(),
+    };
     let checkpoint = ValidatedCheckpoint {
         manifest: manifest.clone(),
         dtype: dtype.clone(),
         model_path,
+        model_sha256,
+        manifest_sha256: manifest_sha.clone(),
         tokenizer_path,
         head_path,
         calibration: decision,
@@ -482,6 +489,11 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
             ));
         }
     }
+
+    // The self-check ran through the very path of real requests and may have saved prefixes: the
+    // first request of the user starts cold, with nothing counted.
+    engine.scorer.clear_cache();
+    engine.scorer.reset_cache_counters();
 
     // Notices.
     ctx.observer.on_event(&Event::License {
