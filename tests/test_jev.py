@@ -164,7 +164,7 @@ def test_input_errors_are_typed_and_happen_before_the_scorer() -> None:
         with pytest.raises(TypeError):
             jev.ask(STATE, not_a_mapping)
     with pytest.raises(TypeError):
-        jev.ask_many(5, QUESTIONS)  # type: ignore[arg-type]
+        jev.ask_many(5, QUESTIONS)  # type: ignore[call-overload]
     assert scorer.calls == 0
     with pytest.raises(
         InvalidQuestionError,

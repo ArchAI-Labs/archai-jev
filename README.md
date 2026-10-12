@@ -150,6 +150,10 @@ The part of a prompt that questions share is computed once and kept in memory (s
 [docs/prefix-cache.md](docs/prefix-cache.md)): `Jev.from_pretrained(prefix_cache_mib=0)` turns it off,
 `jev.cache_info()` shows what it holds.
 
+`Ctrl-C` stops a running `ask`/`ask_many` at the next row of the model, and cancelling an `aask`
+stops its work (see [docs/concurrency.md](docs/concurrency.md)); `ask_many(..., return_exceptions=True)`
+returns the error of a failed state in its place instead of losing the rest.
+
 ## Known limits of 0.1.0
 
 - CPU only; no GPU.

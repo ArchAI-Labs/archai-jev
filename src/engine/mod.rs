@@ -18,6 +18,7 @@ pub mod llama;
 use std::any::Any;
 use std::sync::Arc;
 
+use crate::control::Control;
 use crate::error::{Error, Result};
 
 /// What to read from a row of the model. More kinds can be added without touching the engine.
@@ -171,6 +172,28 @@ pub trait Forward: Send + Sync {
     /// [`crate::Error::Inference`] if the engine cannot start (or does not decode in segments).
     fn begin_empty<'a>(&'a self) -> Result<Box<dyn Session + 'a>> {
         Err(no_segments())
+    }
+
+    /// Like [`begin`](Self::begin), but the wait for the engine looks at `control`, so a request
+    /// that is queued can give up (spec 008). An engine with no queue keeps this default.
+    ///
+    /// # Errors
+    /// [`crate::Error::Cancelled`] if `control` says stop while waiting; otherwise as `begin`.
+    fn begin_with<'a>(
+        &'a self,
+        state: &[u32],
+        _control: &dyn Control,
+    ) -> Result<Box<dyn Session + 'a>> {
+        self.begin(state)
+    }
+
+    /// Like [`begin_empty`](Self::begin_empty), with the wait looking at `control`.
+    ///
+    /// # Errors
+    /// [`crate::Error::Cancelled`] if `control` says stop while waiting; otherwise as
+    /// `begin_empty`.
+    fn begin_empty_with<'a>(&'a self, _control: &dyn Control) -> Result<Box<dyn Session + 'a>> {
+        self.begin_empty()
     }
 }
 

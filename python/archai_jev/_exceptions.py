@@ -19,6 +19,11 @@ __all__ = [
 ]
 
 
+class _StoppedError(Exception):
+    """Private: a call stopped by its token (the cancellation of ``aask``). The async methods
+    turn it into ``asyncio.CancelledError``; it never reaches a user."""
+
+
 class JevError(Exception):
     """Base class of every error raised by archai_jev about its inputs, models or results."""
 

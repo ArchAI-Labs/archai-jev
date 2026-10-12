@@ -2,6 +2,7 @@
 
 use crate::answers::{Answer, Answers, ChoiceAnswer, Probabilities, ScoreAnswer, YesNoAnswer};
 use crate::calibration::calibrated_softmax;
+use crate::control::{Control, NoControl};
 use crate::error::{Error, Result, ShapeProblem};
 use crate::schema::{Choice, Question, Questions, State};
 use crate::scorer::Scorer;
@@ -15,8 +16,22 @@ use crate::scorer::Scorer;
 /// [`Error::ScorerOutputShape`], [`Error::NonFiniteLogit`], [`Error::InvalidDistribution`],
 /// or whatever the scorer itself reports.
 pub fn ask(scorer: &dyn Scorer, state: &State, questions: &Questions) -> Result<Answers> {
+    ask_with(scorer, state, questions, &NoControl)
+}
+
+/// Like [`ask`], but `control` is asked between the rows of the request: if it says stop, the
+/// call ends with [`Error::Cancelled`] and no answer at all (spec 008).
+///
+/// # Errors
+/// [`Error::Cancelled`] when `control` says stop; otherwise as [`ask`].
+pub fn ask_with(
+    scorer: &dyn Scorer,
+    state: &State,
+    questions: &Questions,
+    control: &dyn Control,
+) -> Result<Answers> {
     let calibration = scorer.calibration();
-    let logits = scorer.score(state, questions)?;
+    let logits = scorer.score_with(state, questions, control)?;
 
     if logits.len() != questions.len() {
         return Err(Error::ScorerOutputShape(ShapeProblem::Questions {
@@ -213,6 +228,96 @@ mod tests {
             vec![1.0, -1.0],
         ])
         .with_calibration(Calibration::new(1.0, true).unwrap())
+    }
+
+    /// Stops the work the `limit`-th time it is asked.
+    struct StopAt {
+        asked: std::sync::atomic::AtomicUsize,
+        limit: usize,
+    }
+
+    impl Control for StopAt {
+        fn checkpoint(&self) -> Result<()> {
+            let n = self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if n >= self.limit {
+                Err(Error::Cancelled)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// A scorer that asks the control before each question, like the model scorer does between rows.
+    struct Obeying(MockScorer);
+
+    impl Scorer for Obeying {
+        fn calibration(&self) -> Calibration {
+            self.0.calibration()
+        }
+
+        fn score(&self, state: &State, questions: &Questions) -> Result<Vec<Vec<f64>>> {
+            self.score_with(state, questions, &NoControl)
+        }
+
+        fn score_with(
+            &self,
+            state: &State,
+            questions: &Questions,
+            control: &dyn Control,
+        ) -> Result<Vec<Vec<f64>>> {
+            for _ in questions.iter() {
+                control.checkpoint()?;
+            }
+            self.0.score(state, questions)
+        }
+    }
+
+    /// A scorer that only implements `score`: it never heard of a control.
+    struct Plain(MockScorer);
+
+    impl Scorer for Plain {
+        fn calibration(&self) -> Calibration {
+            self.0.calibration()
+        }
+
+        fn score(&self, state: &State, questions: &Questions) -> Result<Vec<Vec<f64>>> {
+            self.0.score(state, questions)
+        }
+    }
+
+    #[test]
+    fn a_scorer_that_ignores_the_control_gives_the_same_answers() {
+        let stop_at_once = StopAt {
+            asked: std::sync::atomic::AtomicUsize::new(0),
+            limit: 1,
+        };
+        let plain = ask(&Plain(scripted()), &state(), &questions()).unwrap();
+        let with = ask_with(&Plain(scripted()), &state(), &questions(), &stop_at_once).unwrap();
+        assert_eq!(plain, with);
+        // the default `score_with` never even looked at it
+        assert_eq!(
+            stop_at_once.asked.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[test]
+    fn a_control_that_stops_leaves_no_partial_answer() {
+        let scorer = Obeying(scripted());
+        let stop_at_second = StopAt {
+            asked: std::sync::atomic::AtomicUsize::new(0),
+            limit: 2,
+        };
+        let verdict = ask_with(&scorer, &state(), &questions(), &stop_at_second);
+        assert!(matches!(verdict, Err(Error::Cancelled)), "{verdict:?}");
+        // the scorer looked once per question until it was stopped, and `ask` (no control) still works
+        assert_eq!(
+            stop_at_second
+                .asked
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert!(ask(&scorer, &state(), &questions()).is_ok());
     }
 
     #[test]

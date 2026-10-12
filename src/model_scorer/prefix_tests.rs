@@ -24,7 +24,7 @@ fn target(label: &str, id: u32) -> Target {
     }
 }
 
-fn letters() -> Box<dyn Head> {
+pub(super) fn letters() -> Box<dyn Head> {
     Box::new(crate::heads::LettersHead::new(
         &[
             target("A", 10),
@@ -36,7 +36,7 @@ fn letters() -> Box<dyn Head> {
     ))
 }
 
-fn tokenizer() -> PromptTokenizer {
+pub(super) fn tokenizer() -> PromptTokenizer {
     testkit::byte_level(&[("im_start", "<|im_start|>"), ("im_end", "<|im_end|>")])
 }
 

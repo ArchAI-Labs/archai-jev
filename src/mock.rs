@@ -4,6 +4,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use crate::control::{Control, NoControl};
 use crate::error::Result;
 use crate::schema::{Questions, State};
 use crate::scorer::{Calibration, Scorer};
@@ -182,9 +183,29 @@ impl Scorer for MockScorer {
     }
 
     fn score(&self, state: &State, questions: &Questions) -> Result<Vec<Vec<f64>>> {
+        self.score_with(state, questions, &NoControl)
+    }
+
+    /// The pause of `latency` is split between the questions (the "rows" of the mock) and the
+    /// control is asked before each slice, so a test can stop a call part-way as it can stop a
+    /// real model between rows. A slice that has started is never interrupted.
+    fn score_with(
+        &self,
+        state: &State,
+        questions: &Questions,
+        control: &dyn Control,
+    ) -> Result<Vec<Vec<f64>>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        control.checkpoint()?;
         if !self.latency.is_zero() {
-            std::thread::sleep(self.latency);
+            let slices = u32::try_from(questions.len()).unwrap_or(1).max(1);
+            let slice = self.latency / slices;
+            for i in 0..slices {
+                if i > 0 {
+                    control.checkpoint()?;
+                }
+                std::thread::sleep(slice);
+            }
         }
         let mut out: Vec<Vec<f64>> = match &self.mode {
             Mode::Scripted(rows) => rows.clone(),
@@ -326,5 +347,53 @@ mod tests {
         assert!(faulty.score(&s, &q).unwrap()[0][0].is_nan());
         assert_eq!((base.calls(), faulty.calls()), (1, 1));
         assert!(!base.calibration().calibrated());
+    }
+
+    #[test]
+    fn the_latency_is_split_between_the_questions_and_the_control_is_asked_before_each_slice() {
+        use crate::error::Error;
+        use std::sync::atomic::AtomicUsize;
+        use std::time::Instant;
+
+        struct Counting(AtomicUsize, usize);
+        impl Control for Counting {
+            fn checkpoint(&self) -> Result<()> {
+                if self.0.fetch_add(1, Ordering::SeqCst) + 1 >= self.1 {
+                    Err(Error::Cancelled)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        let slow = MockScorer::new(1).with_latency(Duration::from_millis(120));
+        let st = state("a text");
+        let q = qs(&["x", "y", "z"], "Which?");
+        // never stopped: the whole pause, same numbers as `score`
+        let never = Counting(AtomicUsize::new(0), usize::MAX);
+        let started = Instant::now();
+        let full = slow.score_with(&st, &q, &never).unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(115));
+        assert_eq!(never.0.load(Ordering::SeqCst), 3, "one look per question");
+        assert_eq!(full, slow.score(&st, &q).unwrap());
+        // stopped at the second look: one slice (40 ms) was spent, not the three
+        let stop = Counting(AtomicUsize::new(0), 2);
+        let started = Instant::now();
+        assert!(matches!(
+            slow.score_with(&st, &q, &stop),
+            Err(Error::Cancelled)
+        ));
+        let spent = started.elapsed();
+        assert!(
+            spent >= Duration::from_millis(35) && spent < Duration::from_millis(100),
+            "{spent:?}"
+        );
+        // with no pause there is still a look at the start
+        let fast = MockScorer::new(1);
+        let once = Counting(AtomicUsize::new(0), 1);
+        assert!(matches!(
+            fast.score_with(&st, &q, &once),
+            Err(Error::Cancelled)
+        ));
     }
 }

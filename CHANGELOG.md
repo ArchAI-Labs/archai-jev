@@ -38,6 +38,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The key of a saved prefix includes the model revision, the GGUF hash, the template id and
   version, the tokenizer hash and the engine settings; a prefix that cannot be restored raises
   `InferenceError` and is dropped. No new dependency; the wheel grows by less than 1 %.
+- **`Ctrl-C` stops a running call.** `ask` and `ask_many` look for an interrupt between two rows of
+  the model (main thread, as Python delivers signals), stop with no partial result and leave the
+  `Jev` usable. With the default model the `KeyboardInterrupt` arrived about 30 ms after the signal
+  (before: when the whole call ended). A signal handler or a destructor that runs inside a call and
+  calls `ask` raises `RuntimeError` instead of waiting for itself for ever.
+- **Cancelling `aask`/`aask_many` stops the work.** A request that has not started never starts; one
+  that is running stops at its next row (before, the result was thrown away and the model kept
+  computing). They run on a four-thread executor of their own per `Jev` (`archai-jev-*` threads)
+  instead of the event loop's default executor, so a busy default executor no longer slows them
+  and a flood of `aask` no longer slows the program's `to_thread` calls.
+- `ask_many(states, questions, *, return_exceptions=False)` and `aask_many(...)`: with `True` a
+  state whose calculation fails gives its error in its place (`list[Answers | JevError]`, typed with
+  `@overload`); invalid input still raises before any calculation. See `docs/concurrency.md`.
+- A pool of inference contexts that share the weights exists in the Rust core (`SlotPool`,
+  `LlamaBackend::with_max_concurrency`; not exposed in Python): bit-identical answers for 1, 2, 4
+  and 8 contexts, and the rule that the threads of the running contexts never add up to more than the
+  budget (llama.cpp's own thread pool stalls when they do). Measured gain on a 20-thread CPU: about
+  1.1 to 1.2 times, which is why Python keeps one request at a time.
 
 ### Changed
 - Prompts of the default model are now computed in segments (at the end of the task block and of

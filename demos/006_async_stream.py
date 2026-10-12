@@ -5,7 +5,8 @@ What you will learn
 * ``ask_many``: the same question about MANY texts in one call,
 * ``aask`` / ``aask_many``: the ``async`` versions, for ``asyncio`` programs,
 * how to prove that the event loop is not blocked while the model works,
-* that one ``Jev`` handles ONE request at a time: concurrent calls wait their turn.
+* that one ``Jev`` handles ONE request at a time: concurrent calls wait their turn,
+* that cancelling a task really stops its work (and so does ``Ctrl-C`` on a plain ``ask``).
 
 The use case
 ------------
@@ -115,6 +116,33 @@ async def main_async(jev: Jev) -> None:
     results = await asyncio.gather(*(one(i, MESSAGES[i][0]) for i in range(3)))
     for index, finished in sorted(results, key=lambda r: r[1]):
         print(f"  call {index} finished after {finished:5.2f} s")
+
+    # ----------------------------------------------------------------------------------
+    # PART 4. Cancelling really stops the work.
+    #
+    # Eight requests are waiting for the model and we change our mind after a third of a
+    # second. A request that has not started never starts; the one that is running stops at
+    # its next row. So the model is free again almost at once: a new request does not have
+    # to wait for the eight we gave up. (This is also what ``asyncio.wait_for(...,
+    # timeout=...)`` does when the timeout expires.)
+    # ----------------------------------------------------------------------------------
+    section("4. Cancelling stops the work")
+    tasks = [
+        asyncio.create_task(jev.aask(MESSAGES[i][0], {"cancel": WANTS_TO_CANCEL}))
+        for i in range(8)
+    ]
+    await asyncio.sleep(0.3)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    started = time.perf_counter()
+    await jev.aask(MESSAGES[0][0], {"cancel": WANTS_TO_CANCEL})
+    print("  eight requests cancelled after 0.3 s; a new one then took")
+    per_request = max(finished for _, finished in results) / len(results)
+    print(
+        f"  {time.perf_counter() - started:.2f} s (eight finished requests would have taken"
+        f" about {8 * per_request:.1f} s, at {per_request:.2f} s each as in part 3)"
+    )
 
 
 def main() -> None:

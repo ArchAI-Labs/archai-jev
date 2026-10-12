@@ -4,12 +4,13 @@
 //! and S5: the state is decoded once on sequence 0; each question is decoded on sequence 1, a
 //! copy of the state (`kv_cache_seq_cp`, which also copies the recurrent state of Gated DeltaNet
 //! layers); numbers are read **by batch index**, never by "row of output" index (that returns
-//! `Ok` with other values). A context is created per request and the model is shared, so the
-//! one-context-at-a-time rule of llama.cpp holds by construction, and concurrent requests wait.
+//! `Ok` with other values). A context is created per request and the model is shared. A context
+//! is never used by two requests, and the requests that may run together are the slots of a
+//! [`SlotPool`] (spec 008): one slot by default, so concurrent requests wait, like in 0.2.0.
 
 use std::num::NonZeroU32;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::OnceLock;
 
 use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::context::params::{LlamaContextParams, LlamaPoolingType};
@@ -22,7 +23,9 @@ use llama_cpp_2::token::LlamaToken;
 
 use super::cpu::{self, HostCpu};
 use super::{Forward, Output, OutputSpec, Session, Snapshot};
+use crate::control::{Control, NoControl};
 use crate::error::{Error, Result};
+use crate::pool::{PoolStats, Slot, SlotPool};
 
 fn inference(detail: impl Into<String>) -> Error {
     Error::Inference {
@@ -61,7 +64,7 @@ pub struct LlamaConfig {
 pub struct LlamaForward {
     model: LlamaModel,
     config: LlamaConfig,
-    lock: Mutex<()>,
+    pool: SlotPool,
 }
 
 impl LlamaForward {
@@ -73,11 +76,32 @@ impl LlamaForward {
         cpu::check(&HostCpu)?;
         let model = LlamaModel::load_from_file(backend()?, path, &LlamaModelParams::default())
             .map_err(|e| inference(format!("cannot load {}: {e}", path.display())))?;
+        let budget = usize::try_from(config.threads).unwrap_or(1);
         Ok(LlamaForward {
             model,
             config,
-            lock: Mutex::new(()),
+            pool: SlotPool::new(1, budget),
         })
+    }
+
+    /// Let up to `k` requests run together (spec 008). The default is 1: requests wait their
+    /// turn, as in 0.2.0. With more, the pool opens only when requests queue up (see
+    /// [`crate::pool::policy`]).
+    #[must_use]
+    pub fn with_max_concurrency(mut self, k: usize) -> Self {
+        let budget = usize::try_from(self.config.threads).unwrap_or(1);
+        self.pool = SlotPool::new(k, budget);
+        self
+    }
+
+    /// The slots of the model: counters, and the demand of an `ask_many`.
+    pub fn pool(&self) -> &SlotPool {
+        &self.pool
+    }
+
+    /// The counters of the pool.
+    pub fn pool_stats(&self) -> PoolStats {
+        self.pool.stats()
     }
 
     /// Hidden size of the model.
@@ -102,7 +126,7 @@ impl LlamaForward {
         )
     }
 
-    fn context_params(&self) -> Result<LlamaContextParams> {
+    fn context_params(&self, threads: i32) -> Result<LlamaContextParams> {
         let rows = 2u32; // sequence 0 holds the state, sequence 1 the question being run
         let n_ctx = self
             .config
@@ -115,8 +139,8 @@ impl LlamaForward {
             .with_n_batch(self.config.max_context)
             .with_n_ubatch(self.config.max_context)
             .with_n_seq_max(rows)
-            .with_n_threads(self.config.threads)
-            .with_n_threads_batch(self.config.threads);
+            .with_n_threads(threads)
+            .with_n_threads_batch(threads);
         if self.config.hidden_states {
             params = params
                 .with_embeddings(true)
@@ -152,7 +176,8 @@ struct LlamaSession<'a> {
     /// Tokens on sequence 0, the part every question starts from.
     shared_len: usize,
     hidden_states: bool,
-    _guard: MutexGuard<'a, ()>,
+    /// Last on purpose: the context is freed before the slot is given back.
+    _slot: Slot<'a>,
 }
 
 fn first_non_finite(values: &[f32]) -> Option<f32> {
@@ -349,32 +374,45 @@ impl Session for LlamaSession<'_> {
 }
 
 impl LlamaForward {
-    fn start<'a>(&'a self) -> Result<LlamaSession<'a>> {
-        let guard = self
-            .lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    fn start<'a>(&'a self, control: &dyn Control) -> Result<LlamaSession<'a>> {
+        let slot = self.pool.acquire(control)?;
+        let threads = i32::try_from(slot.threads())
+            .unwrap_or(self.config.threads)
+            .max(1);
         let ctx = self
             .model
-            .new_context(backend()?, self.context_params()?)
+            .new_context(backend()?, self.context_params(threads)?)
             .map_err(|e| inference(format!("cannot create the context: {e}")))?;
+        slot.note_context_created();
         Ok(LlamaSession {
             ctx,
             shared_len: 0,
             hidden_states: self.config.hidden_states,
-            _guard: guard,
+            _slot: slot,
         })
     }
 }
 
 impl Forward for LlamaForward {
     fn begin<'a>(&'a self, state: &[u32]) -> Result<Box<dyn Session + 'a>> {
-        let mut session = self.start()?;
+        self.begin_with(state, &NoControl)
+    }
+
+    fn begin_empty<'a>(&'a self) -> Result<Box<dyn Session + 'a>> {
+        self.begin_empty_with(&NoControl)
+    }
+
+    fn begin_with<'a>(
+        &'a self,
+        state: &[u32],
+        control: &dyn Control,
+    ) -> Result<Box<dyn Session + 'a>> {
+        let mut session = self.start(control)?;
         session.extend(state)?;
         Ok(Box::new(session))
     }
 
-    fn begin_empty<'a>(&'a self) -> Result<Box<dyn Session + 'a>> {
-        Ok(Box::new(self.start()?))
+    fn begin_empty_with<'a>(&'a self, control: &dyn Control) -> Result<Box<dyn Session + 'a>> {
+        Ok(Box::new(self.start(control)?))
     }
 }

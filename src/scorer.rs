@@ -1,5 +1,6 @@
 //! The single point where a model plugs into the core.
 
+use crate::control::Control;
 use crate::error::{Error, Result};
 use crate::schema::{Questions, State};
 
@@ -60,6 +61,21 @@ pub trait Scorer: Send + Sync {
     /// # Errors
     /// Whatever the model reports; the pipeline checks the shape and finiteness afterwards.
     fn score(&self, state: &State, questions: &Questions) -> Result<Vec<Vec<f64>>>;
+
+    /// Like [`score`](Self::score), but asks `control` between the rows of the request (and while
+    /// it waits for the engine), so the call can be stopped without a partial result. A scorer
+    /// that has no rows to wait between (the mock) keeps this default and ignores the control.
+    ///
+    /// # Errors
+    /// [`Error::Cancelled`] when `control` says stop; otherwise as [`score`](Self::score).
+    fn score_with(
+        &self,
+        state: &State,
+        questions: &Questions,
+        _control: &dyn Control,
+    ) -> Result<Vec<Vec<f64>>> {
+        self.score(state, questions)
+    }
 
     /// What the memory of reused prefixes holds and has done; `None` for a scorer that has none.
     fn cache_info(&self) -> Option<CacheInfo> {

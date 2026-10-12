@@ -108,11 +108,17 @@ def test_clear_cache_is_harmless_and_does_not_change_answers() -> None:
 
 def test_ask_signatures_are_unchanged() -> None:
     assert list(inspect.signature(Jev.ask).parameters) == ["self", "state", "questions"]
+    # `ask_many` gained one keyword-only parameter with a default (spec 008): additive.
     assert list(inspect.signature(Jev.ask_many).parameters) == [
         "self",
         "states",
         "questions",
+        "return_exceptions",
     ]
+    assert (
+        inspect.signature(Jev.ask_many).parameters["return_exceptions"].kind
+        is inspect.Parameter.KEYWORD_ONLY
+    )
     assert list(inspect.signature(Jev.cache_info).parameters) == ["self"]
     assert list(inspect.signature(Jev.clear_cache).parameters) == ["self"]
 

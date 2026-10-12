@@ -6,6 +6,7 @@ from typing_extensions import Self
 __all__ = [
     "Fault",
     "MockScorer",
+    "_CancelToken",
     "_Model",
     "_Question",
     "calibrated_softmax",
@@ -14,6 +15,17 @@ __all__ = [
     "make_question",
     "render_state",
 ]
+
+@final
+class _CancelToken:
+    """A token another thread sets to stop a call between two rows."""
+
+    def __init__(self) -> None: ...
+    def set(self) -> None:
+        """Ask the call that holds this token to stop at its next row."""
+
+    def is_set(self) -> bool:
+        """Whether ``set`` was called."""
 
 @final
 class _Question:
@@ -95,14 +107,28 @@ class _Model:
         """Forget every saved prefix; never changes a result."""
 
     def ask(
-        self, state: Any, questions: Sequence[tuple[str, _Question]]
+        self,
+        state: Any,
+        questions: Sequence[tuple[str, _Question]],
+        cancel: _CancelToken | None = None,
     ) -> list[tuple[Any, ...]]:
-        """Ask every question about ``state``; one tuple per answer, in question order."""
+        """Ask every question about ``state``; one tuple per answer, in question order.
+
+        ``cancel`` stops the call between two rows when another thread sets it.
+        """
 
     def ask_many(
-        self, states: Sequence[Any], questions: Sequence[tuple[str, _Question]]
-    ) -> list[list[tuple[Any, ...]]]:
-        """Same questions on several states; all states are validated first."""
+        self,
+        states: Sequence[Any],
+        questions: Sequence[tuple[str, _Question]],
+        cancel: _CancelToken | None = None,
+        return_exceptions: bool = False,
+    ) -> list[Any]:
+        """Same questions on several states, one after the other; all states are validated first.
+
+        Each item is the list of answer tuples of a state or, with ``return_exceptions``, the
+        exception object of a state whose calculation failed.
+        """
 
 def load_model(
     kind: str,

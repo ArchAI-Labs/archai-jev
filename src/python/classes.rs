@@ -1,15 +1,20 @@
-//! Python classes and functions of `archai_jev._core`: thin wrappers around the core.
+﻿//! Python classes and functions of `archai_jev._core`: thin wrappers around the core.
 
-use std::sync::Arc;
+use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyInt, PyList, PyString, PyTuple};
 
 use super::convert::{entry_value, state_value};
 use crate::answers::Answer;
+use crate::ask::ask_with;
+use crate::control::Control;
 use crate::error::Error;
+use crate::hub::events::{Cancel, CancelFlag};
 use crate::mock::{Fault, MockScorer};
 use crate::schema::{Choice, ChoiceOption, Question, Questions, Score, State, TextEntry, YesNo};
 use crate::scorer::{Calibration, Scorer};
@@ -429,16 +434,23 @@ impl PyModel {
     }
 
     /// Ask every question about `state`; returns one tuple per answer, in question order.
+    ///
+    /// `cancel` is a token another thread can set to stop the call between two rows.
+    #[pyo3(signature = (state, questions, cancel=None))]
     fn ask<'py>(
         &self,
         py: Python<'py>,
         state: &Obj<'py>,
         questions: Vec<(String, Py<PyQuestion>)>,
+        cancel: Option<Py<PyCancelToken>>,
     ) -> PyResult<Bound<'py, PyList>> {
+        refuse_reentrant_call()?;
         let state = State::new(state_value(state)?)?;
         let questions = build_questions(&questions)?;
         let scorer = Arc::clone(&self.scorer);
-        let answers = py.detach(|| crate::ask::ask(scorer.as_ref(), &state, &questions))?;
+        let control = PyControl::new(py, cancel.as_ref().map(|t| t.get().flag()))?;
+        let answers = py.detach(|| ask_with(scorer.as_ref(), &state, &questions, &control));
+        let answers = control.finish(py, answers)?;
         let out = PyList::empty(py);
         for (name, a) in answers.iter() {
             out.append(answer_to_python(py, name, a)?)?;
@@ -446,13 +458,20 @@ impl PyModel {
         Ok(out)
     }
 
-    /// Same questions on several states; all states are validated before any calculation.
+    /// Same questions on several states, one after the other; all states are validated before
+    /// any calculation. With `return_exceptions` a state whose calculation fails gives its error
+    /// (as an exception object) in its place instead of ending the call; a stop requested with
+    /// `Ctrl-C` or a token always ends it.
+    #[pyo3(signature = (states, questions, cancel=None, return_exceptions=false))]
     fn ask_many<'py>(
         &self,
         py: Python<'py>,
         states: Vec<Obj<'py>>,
         questions: Vec<(String, Py<PyQuestion>)>,
+        cancel: Option<Py<PyCancelToken>>,
+        return_exceptions: bool,
     ) -> PyResult<Bound<'py, PyList>> {
+        refuse_reentrant_call()?;
         let mut parsed = Vec::with_capacity(states.len());
         for (i, s) in states.iter().enumerate() {
             let state = state_value(s)
@@ -462,21 +481,175 @@ impl PyModel {
         }
         let questions = build_questions(&questions)?;
         let scorer = Arc::clone(&self.scorer);
-        let all = py.detach(|| {
-            parsed
-                .iter()
-                .map(|s| crate::ask::ask(scorer.as_ref(), s, &questions))
-                .collect::<Result<Vec<_>, Error>>()
-        })?;
-        let out = PyList::empty(py);
-        for answers in &all {
-            let one = PyList::empty(py);
-            for (name, a) in answers.iter() {
-                one.append(answer_to_python(py, name, a)?)?;
+        let control = PyControl::new(py, cancel.as_ref().map(|t| t.get().flag()))?;
+        let outcome = py.detach(|| {
+            let mut done = Vec::with_capacity(parsed.len());
+            for s in &parsed {
+                match ask_with(scorer.as_ref(), s, &questions, &control) {
+                    Ok(answers) => done.push(Ok(answers)),
+                    Err(Error::Cancelled) => return (done, Some(Error::Cancelled)),
+                    Err(e) if return_exceptions => done.push(Err(e)),
+                    Err(e) => return (done, Some(e)),
+                }
             }
-            out.append(one)?;
+            (done, None)
+        });
+        let (done, stopped) = outcome;
+        if let Some(e) = stopped {
+            return control.finish(py, Err::<Bound<'py, PyList>, Error>(e));
+        }
+        let out = PyList::empty(py);
+        for item in done {
+            match item {
+                Ok(answers) => {
+                    let one = PyList::empty(py);
+                    for (name, a) in answers.iter() {
+                        one.append(answer_to_python(py, name, a)?)?;
+                    }
+                    out.append(one)?;
+                }
+                Err(e) => out.append(PyErr::from(e).into_value(py))?,
+            }
         }
         Ok(out)
+    }
+}
+
+thread_local! {
+    /// True while this thread is inside `PyErr_CheckSignals`, where a signal handler (or a
+    /// destructor it triggers) can run Python code, and so call `ask` again.
+    static IN_SIGNAL_CHECK: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A signal handler that calls `ask` while the call it interrupted still holds the model would
+/// wait for that call for ever. Refuse it, whatever the size of the pool.
+fn refuse_reentrant_call() -> PyResult<()> {
+    if IN_SIGNAL_CHECK.with(Cell::get) {
+        return Err(PyRuntimeError::new_err(
+            "Jev.ask() cannot be called from a signal handler or a destructor running inside another Jev call",
+        ));
+    }
+    Ok(())
+}
+
+/// Puts the flag of [`IN_SIGNAL_CHECK`] back even if the check unwinds.
+struct SignalCheckGuard;
+
+impl SignalCheckGuard {
+    fn enter() -> Self {
+        IN_SIGNAL_CHECK.with(|c| c.set(true));
+        SignalCheckGuard
+    }
+}
+
+impl Drop for SignalCheckGuard {
+    fn drop(&mut self) {
+        IN_SIGNAL_CHECK.with(|c| c.set(false));
+    }
+}
+
+/// A token another thread sets to stop an `ask` between two rows (the cancellation of `aask`).
+#[pyclass(frozen, name = "_CancelToken", module = "archai_jev._core")]
+pub struct PyCancelToken {
+    flag: Arc<CancelFlag>,
+}
+
+impl PyCancelToken {
+    fn flag(&self) -> Arc<CancelFlag> {
+        Arc::clone(&self.flag)
+    }
+}
+
+#[pymethods]
+impl PyCancelToken {
+    #[new]
+    fn new() -> Self {
+        PyCancelToken {
+            flag: Arc::new(CancelFlag::default()),
+        }
+    }
+
+    /// Ask the call that holds this token to stop at its next row.
+    fn set(&self) {
+        self.flag.cancel();
+    }
+
+    /// Whether `set` was called.
+    fn is_set(&self) -> bool {
+        self.flag.cancelled()
+    }
+}
+
+/// The control of one call from Python: between two rows it looks at the token and, in the main
+/// thread, at pending signals (`Ctrl-C`). The GIL is taken only for that look, and never while a
+/// lock of the pool is held.
+struct PyControl {
+    token: Option<Arc<CancelFlag>>,
+    /// Signals are only handled in the main thread of Python; elsewhere there is nothing to ask.
+    main_thread: bool,
+    stopped_by_token: AtomicBool,
+    /// The exception a signal handler raised (`KeyboardInterrupt`), to raise again at the end.
+    caught: Mutex<Option<PyErr>>,
+}
+
+impl PyControl {
+    fn new(py: Python<'_>, token: Option<Arc<CancelFlag>>) -> PyResult<Self> {
+        let threading = py.import("threading")?;
+        let main_thread = threading
+            .call_method0("current_thread")?
+            .is(&threading.call_method0("main_thread")?);
+        Ok(PyControl {
+            token,
+            main_thread,
+            stopped_by_token: AtomicBool::new(false),
+            caught: Mutex::new(None),
+        })
+    }
+
+    /// The result of a call that may have been stopped: the exception the signal handler raised,
+    /// the private `_StoppedError` if the token stopped it, or the ordinary mapping of the error.
+    fn finish<T>(&self, py: Python<'_>, result: Result<T, Error>) -> PyResult<T> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(Error::Cancelled) => {
+                let caught = self
+                    .caught
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                if let Some(err) = caught {
+                    Err(err)
+                } else if self.stopped_by_token.load(Ordering::SeqCst) {
+                    Err(super::errors::private_cancelled(py))
+                } else {
+                    Err(PyErr::from(Error::Cancelled))
+                }
+            }
+            Err(other) => Err(PyErr::from(other)),
+        }
+    }
+}
+
+impl Control for PyControl {
+    fn checkpoint(&self) -> Result<(), Error> {
+        if self.token.as_ref().is_some_and(|t| t.cancelled()) {
+            self.stopped_by_token.store(true, Ordering::SeqCst);
+            return Err(Error::Cancelled);
+        }
+        if !self.main_thread {
+            return Ok(());
+        }
+        let verdict = Python::attach(|py| {
+            let _guard = SignalCheckGuard::enter();
+            py.check_signals()
+        });
+        match verdict {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                *self.caught.lock().unwrap_or_else(PoisonError::into_inner) = Some(err);
+                Err(Error::Cancelled)
+            }
+        }
     }
 }
 

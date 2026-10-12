@@ -1,13 +1,14 @@
-//! The segmented path of [`ModelScorer`]: what the rows of a request share is decoded once (or
+﻿//! The segmented path of [`ModelScorer`]: what the rows of a request share is decoded once (or
 //! restored from a saved prefix), then every question runs in the segments its own cuts define.
 //!
-//! For a row the engine always sees the same sequence of decodes, `[0..c1) [c1..c2) … [cn..len)`,
+//! For a row the engine always sees the same sequence of decodes, `[0..c1) [c1..c2) â€¦ [cn..len)`,
 //! whether a prefix was decoded here, restored from memory or shared with the other rows of the
 //! request: that is what keeps the numbers identical with the memory cold, warm or empty.
 
 use std::ops::Range;
 
 use super::{ModelScorer, name_the_question};
+use crate::control::Control;
 use crate::engine::OutputSpec;
 use crate::error::{Error, Result};
 use crate::prefix::{Entry, KeyHasher, PrefixKey, RequestPlan, admit};
@@ -47,12 +48,13 @@ impl ModelScorer {
         &self,
         questions: &Questions,
         prompt: &Prompt,
+        control: &dyn Control,
     ) -> Result<Vec<(String, Vec<f64>)>> {
         let plan = RequestPlan::new(prompt)?;
         let shared_end = plan.shared_len();
         let state_len = prompt.state().len();
         let rows = prompt.branches().len();
-        let mut session = self.forward.begin_empty()?;
+        let mut session = self.forward.begin_empty_with(control)?;
         let mut decoded = 0usize;
         // Where the rows start: the end of the shared part (a test mutant moves it back).
         let mut base_end = shared_end;
@@ -120,6 +122,7 @@ impl ModelScorer {
                     let ids = first
                         .get(segment.clone())
                         .ok_or_else(|| outside("a segment"))?;
+                    control.checkpoint()?;
                     session.extend(ids)?;
                     decoded += ids.len();
                     self.save_if_worth_it(
@@ -137,6 +140,7 @@ impl ModelScorer {
         let mut logits = Vec::with_capacity(questions.len());
         let mut own_tokens = 0usize;
         for (i, ((name, question), branch)) in questions.iter().zip(prompt.branches()).enumerate() {
+            control.checkpoint()?;
             let (Some(row), Some(own)) = (prompt.row(i), plan.rows.get(i)) else {
                 return Err(Error::Inference {
                     detail: format!("question {i} has no row"),

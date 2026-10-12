@@ -15,11 +15,14 @@
     clippy::indexing_slicing
 )]
 
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use super::{Forward, Output, OutputSpec, Session, Snapshot};
+use crate::control::{Control, NoControl};
 use crate::error::{Error, Result};
+use crate::pool::{PoolStats, Slot, SlotPool};
 
 /// What the fake was asked to do.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -42,6 +45,8 @@ pub struct Stats {
     pub snapshots: usize,
     /// Snapshots restored.
     pub restores: usize,
+    /// The most sessions that were alive together.
+    pub max_concurrent: usize,
 }
 
 /// A fault to inject.
@@ -61,7 +66,9 @@ pub struct Faults {
 pub struct FakeForward {
     dim: usize,
     sensitive: bool,
-    lock: Mutex<()>,
+    thread_sensitive: bool,
+    pool: SlotPool,
+    in_flight: AtomicUsize,
     stats: Mutex<Stats>,
     faults: Mutex<Faults>,
 }
@@ -101,7 +108,9 @@ impl FakeForward {
         FakeForward {
             dim,
             sensitive: false,
-            lock: Mutex::new(()),
+            thread_sensitive: false,
+            pool: SlotPool::new(1, 1),
+            in_flight: AtomicUsize::new(0),
             stats: Mutex::new(Stats::default()),
             faults: Mutex::new(Faults::default()),
         }
@@ -112,6 +121,33 @@ impl FakeForward {
     pub fn partition_sensitive(mut self) -> Self {
         self.sensitive = true;
         self
+    }
+
+    /// Make the numbers depend on the threads of the slot that ran the request (as a real
+    /// engine's would if its sums were split differently): a test that says "the result does not
+    /// depend on the slot" can then fail.
+    #[must_use]
+    pub fn thread_sensitive(mut self) -> Self {
+        self.thread_sensitive = true;
+        self
+    }
+
+    /// Run up to `max_concurrency` requests together, with `thread_budget` threads in all
+    /// (the rule of spec 008). Without this the fake is a pool of one, as before.
+    #[must_use]
+    pub fn with_pool(mut self, max_concurrency: usize, thread_budget: usize) -> Self {
+        self.pool = SlotPool::new(max_concurrency, thread_budget);
+        self
+    }
+
+    /// The pool's counters.
+    pub fn pool_stats(&self) -> PoolStats {
+        self.pool.stats()
+    }
+
+    /// The pool, to announce the demand of an `ask_many`.
+    pub fn pool(&self) -> &SlotPool {
+        &self.pool
     }
 
     /// Replace the faults.
@@ -170,7 +206,14 @@ struct FakeSession<'a> {
     /// The shared ids and the sizes of the decodes that produced them.
     state: Vec<u32>,
     sizes: Vec<usize>,
-    _guard: MutexGuard<'a, ()>,
+    threads: usize,
+    _slot: Slot<'a>,
+}
+
+impl Drop for FakeSession<'_> {
+    fn drop(&mut self) {
+        self.owner.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl FakeSession<'_> {
@@ -202,7 +245,12 @@ impl FakeSession<'_> {
                 detail: "injected fault".to_string(),
             });
         }
-        let salt = self.owner.salt(&sizes);
+        let thread_salt = if self.owner.thread_sensitive {
+            mix(self.threads as u64 ^ 0x7777)
+        } else {
+            0
+        };
+        let salt = self.owner.salt(&sizes) ^ thread_salt;
         let base = self.state.len();
         let mut out = Vec::with_capacity(outputs.len());
         for spec in outputs {
@@ -295,19 +343,38 @@ impl Session for FakeSession<'_> {
 
 impl Forward for FakeForward {
     fn begin<'a>(&'a self, state: &[u32]) -> Result<Box<dyn Session + 'a>> {
-        let mut session = self.begin_empty()?;
+        self.begin_with(state, &NoControl)
+    }
+
+    fn begin_empty<'a>(&'a self) -> Result<Box<dyn Session + 'a>> {
+        self.begin_empty_with(&NoControl)
+    }
+
+    fn begin_with<'a>(
+        &'a self,
+        state: &[u32],
+        control: &dyn Control,
+    ) -> Result<Box<dyn Session + 'a>> {
+        let mut session = self.begin_empty_with(control)?;
         session.extend(state)?;
         Ok(session)
     }
 
-    fn begin_empty<'a>(&'a self) -> Result<Box<dyn Session + 'a>> {
-        let guard = self.lock.lock().unwrap();
-        self.stats.lock().unwrap().sessions += 1;
+    fn begin_empty_with<'a>(&'a self, control: &dyn Control) -> Result<Box<dyn Session + 'a>> {
+        let slot = self.pool.acquire(control)?;
+        slot.note_context_created();
+        let inside = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        {
+            let mut s = self.stats.lock().unwrap();
+            s.sessions += 1;
+            s.max_concurrent = s.max_concurrent.max(inside);
+        }
         Ok(Box::new(FakeSession {
             owner: self,
             state: Vec::new(),
             sizes: Vec::new(),
-            _guard: guard,
+            threads: slot.threads(),
+            _slot: slot,
         }))
     }
 }

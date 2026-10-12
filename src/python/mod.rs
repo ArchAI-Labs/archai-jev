@@ -12,7 +12,8 @@ use pyo3::prelude::*;
 pub mod _core {
     #[pymodule_export]
     use super::classes::{
-        PyFault, PyMockScorer, PyModel, PyQuestion, calibrated_softmax, make_question, render_state,
+        PyCancelToken, PyFault, PyMockScorer, PyModel, PyQuestion, calibrated_softmax,
+        make_question, render_state,
     };
     #[pymodule_export]
     use super::models::{list_models, load_model};

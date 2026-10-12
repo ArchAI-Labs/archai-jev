@@ -1,19 +1,25 @@
-"""The :class:`Jev` model object and :class:`ModelInfo`."""
+﻿"""The :class:`Jev` model object and :class:`ModelInfo`."""
 
 from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Iterable, Mapping
+import threading
+from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, overload
 
 from . import _core
 from ._answers import Answers, build_answers
-from ._exceptions import InvalidQuestionError
+from ._exceptions import InvalidQuestionError, JevError, _StoppedError
 from ._questions import Choice, Score, YesNo
 
 __all__ = ["CacheInfo", "Jev", "ModelInfo", "list_models"]
+
+# Threads of the executor that runs ``aask`` / ``aask_many``. The model answers one request at a
+# time whatever this number is; the others wait here, where they can still be cancelled.
+_ASYNC_WORKERS = 4
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -122,13 +128,20 @@ class Jev:
     """A loaded decision model. Get one with :meth:`from_pretrained` (or :meth:`from_scorer`
     for the test scorer); ``Jev()`` is not allowed.
 
-    A ``Jev`` is immutable and safe to share between threads and coroutines.
+    A ``Jev`` is immutable and safe to share between threads and coroutines. It answers one
+    request at a time: concurrent calls wait their turn.
+
+    ``Ctrl-C`` interrupts a running call (it is looked at between the model's rows, so within a
+    fraction of a second), and cancelling an ``aask`` stops the work: a request that has not
+    started never starts, one that has started stops at its next row. The ``Jev`` stays usable.
     """
 
-    __slots__ = ("_info", "_model")
+    __slots__ = ("_executor", "_executor_lock", "_info", "_model")
 
     _model: Any
     _info: ModelInfo
+    _executor: ThreadPoolExecutor | None
+    _executor_lock: threading.Lock
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         raise TypeError(
@@ -141,6 +154,8 @@ class Jev:
         obj = object.__new__(cls)
         object.__setattr__(obj, "_model", model)
         object.__setattr__(obj, "_info", info)
+        object.__setattr__(obj, "_executor", None)
+        object.__setattr__(obj, "_executor_lock", threading.Lock())
         return obj
 
     @classmethod
@@ -318,34 +333,156 @@ class Jev:
             InvalidStateError: Unsupported state. Raised before any computation.
             InvalidQuestionError: Invalid questions or names. Raised before any computation.
             NumericalError: The model gave unusable numbers; no result is returned.
+            KeyboardInterrupt: ``Ctrl-C`` while the model works (main thread only). The call
+                stops between two rows of the model, with no result, and the ``Jev`` is still
+                usable.
+            RuntimeError: Called from a signal handler or a destructor that runs inside another
+                call of this ``Jev`` (it would wait for itself).
         """
+        return self._ask(state, questions, None)
+
+    def _ask(
+        self, state: Any, questions: Mapping[str, Any], token: _core._CancelToken | None
+    ) -> Answers:
         pairs = _question_pairs(questions)
-        return build_answers(self._model.ask(state, pairs))
+        return build_answers(self._model.ask(state, pairs, token))
+
+    @overload
+    def ask_many(
+        self,
+        states: Iterable[Any],
+        questions: Mapping[str, Any],
+        *,
+        return_exceptions: Literal[False] = False,
+    ) -> list[Answers]: ...
+
+    @overload
+    def ask_many(
+        self,
+        states: Iterable[Any],
+        questions: Mapping[str, Any],
+        *,
+        return_exceptions: bool,
+    ) -> list[Answers | JevError]: ...
 
     def ask_many(
-        self, states: Iterable[Any], questions: Mapping[str, Any]
-    ) -> list[Answers]:
-        """Same questions on several states, in order; every state is validated first."""
+        self,
+        states: Iterable[Any],
+        questions: Mapping[str, Any],
+        *,
+        return_exceptions: bool = False,
+    ) -> list[Answers] | list[Answers | JevError]:
+        """Same questions on several states, in order; every state is validated first.
+
+        Args:
+            states: The states, one list of answers each.
+            questions: As in :meth:`ask`.
+            return_exceptions: If ``True`` a state whose calculation fails (for example with a
+                :class:`NumericalError`) gives its error object in its place and the others are
+                still answered. If ``False`` (the default) the first failure ends the call. A
+                state or question that is invalid always raises, before any calculation, and
+                ``Ctrl-C`` always stops the call.
+
+        Raises:
+            InvalidStateError: A state is unsupported (the message starts with ``states[i]:``).
+            KeyboardInterrupt: As in :meth:`ask`.
+        """
+        return self._ask_many(states, questions, None, return_exceptions)
+
+    def _ask_many(
+        self,
+        states: Iterable[Any],
+        questions: Mapping[str, Any],
+        token: _core._CancelToken | None,
+        return_exceptions: bool,
+    ) -> list[Answers] | list[Answers | JevError]:
         pairs = _question_pairs(questions)
         if isinstance(states, (str, bytes, Mapping)):
             raise TypeError(
                 f"states must be an iterable of states, got {type(states).__name__}"
             )
         listed = list(states)
-        return [build_answers(raw) for raw in self._model.ask_many(listed, pairs)]
+        raw = self._model.ask_many(listed, pairs, token, return_exceptions)
+        return [
+            item if isinstance(item, JevError) else build_answers(item) for item in raw
+        ]
+
+    def _executor_for_async(self) -> ThreadPoolExecutor:
+        """The threads that run the async calls of this ``Jev`` (made at the first use).
+
+        Not the loop's default executor: a program that already keeps that one busy would make
+        every ``aask`` wait for its own jobs, and cancelling a queued request could not be
+        told apart from theirs.
+        """
+        with self._executor_lock:
+            executor = self._executor
+            if executor is None:
+                executor = ThreadPoolExecutor(
+                    max_workers=_ASYNC_WORKERS, thread_name_prefix="archai-jev"
+                )
+                # No explicit close: the executor ends its threads when it is collected, which is
+                # when the Jev is (a request still waiting keeps the Jev alive).
+                object.__setattr__(self, "_executor", executor)
+            return executor
+
+    async def _run_cancellable(self, work: Callable[[_core._CancelToken], Any]) -> Any:
+        """Run ``work(token)`` in the executor; stop it if this coroutine is cancelled."""
+        token = _core._CancelToken()
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(self._executor_for_async(), work, token)
+        try:
+            return await future
+        except asyncio.CancelledError:
+            # A request still in the queue never starts; one that runs stops at its next row.
+            token.set()
+            raise
+        except _StoppedError:
+            raise asyncio.CancelledError from None
 
     async def aask(self, state: Any, questions: Mapping[str, Any]) -> Answers:
-        """Like :meth:`ask`, in a worker thread so the event loop is not blocked."""
-        return await asyncio.to_thread(self.ask, state, questions)
+        """Like :meth:`ask`, in a worker thread so the event loop is not blocked.
+
+        Cancelling the task stops the work: a request that has not started never starts, and one
+        that is running stops at the next row of the model. The ``Jev`` stays usable.
+        """
+        answers: Answers = await self._run_cancellable(
+            lambda token: self._ask(state, questions, token)
+        )
+        return answers
+
+    @overload
+    async def aask_many(
+        self,
+        states: Iterable[Any],
+        questions: Mapping[str, Any],
+        *,
+        return_exceptions: Literal[False] = False,
+    ) -> list[Answers]: ...
+
+    @overload
+    async def aask_many(
+        self,
+        states: Iterable[Any],
+        questions: Mapping[str, Any],
+        *,
+        return_exceptions: bool,
+    ) -> list[Answers | JevError]: ...
 
     async def aask_many(
-        self, states: Iterable[Any], questions: Mapping[str, Any]
-    ) -> list[Answers]:
-        """Like :meth:`ask_many`, in a worker thread."""
+        self,
+        states: Iterable[Any],
+        questions: Mapping[str, Any],
+        *,
+        return_exceptions: bool = False,
+    ) -> list[Answers] | list[Answers | JevError]:
+        """Like :meth:`ask_many`, in a worker thread; cancelling the task stops the work."""
         listed = (
             list(states) if not isinstance(states, (str, bytes, Mapping)) else states
         )
-        return await asyncio.to_thread(self.ask_many, listed, questions)
+        result: list[Answers] | list[Answers | JevError] = await self._run_cancellable(
+            lambda token: self._ask_many(listed, questions, token, return_exceptions)
+        )
+        return result
 
     def __repr__(self) -> str:
         return f"Jev(model={self._info.name!r})"

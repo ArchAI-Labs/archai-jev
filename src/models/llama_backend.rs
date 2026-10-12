@@ -24,6 +24,7 @@ use crate::prompt::{PromptTokenizer, Roles};
 pub struct LlamaBackend {
     threads: i32,
     prefix_cache_bytes: u64,
+    max_concurrency: usize,
 }
 
 impl LlamaBackend {
@@ -33,6 +34,7 @@ impl LlamaBackend {
         LlamaBackend {
             threads,
             prefix_cache_bytes: 0,
+            max_concurrency: 1,
         }
     }
 
@@ -41,6 +43,14 @@ impl LlamaBackend {
     #[must_use]
     pub fn with_prefix_cache(mut self, bytes: u64) -> Self {
         self.prefix_cache_bytes = bytes;
+        self
+    }
+
+    /// Let up to `k` requests run together (spec 008, D46). `1`, the default, is one request at a
+    /// time with every thread, as in 0.2.0.
+    #[must_use]
+    pub fn with_max_concurrency(mut self, k: usize) -> Self {
+        self.max_concurrency = k.max(1);
         self
     }
 }
@@ -119,7 +129,8 @@ impl Backend for LlamaBackend {
                 max_context,
                 hidden_states,
             },
-        )?;
+        )?
+        .with_max_concurrency(self.max_concurrency);
 
         let engine_text = forward.engine_fingerprint();
         let fingerprint = Fingerprint::new(&FingerprintParts {

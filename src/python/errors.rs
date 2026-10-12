@@ -26,6 +26,15 @@ fn raise(name: &str, message: String) -> PyErr {
     })
 }
 
+/// The private exception of a call stopped by its token (the cancellation of `aask`); the Python
+/// layer turns it into `asyncio.CancelledError`.
+pub fn private_cancelled(py: Python<'_>) -> PyErr {
+    match exception_class(py, "_StoppedError") {
+        Ok(class) => PyErr::from_type(class, "the call was cancelled"),
+        Err(import_error) => import_error,
+    }
+}
+
 impl From<Error> for PyErr {
     fn from(err: Error) -> Self {
         let message = err.to_string();

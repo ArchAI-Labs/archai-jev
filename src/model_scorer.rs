@@ -1,4 +1,4 @@
-//! The scorer of a real model: prompt, forward, head (spec 006b section 7).
+﻿//! The scorer of a real model: prompt, forward, head (spec 006b section 7).
 //!
 //! One function, [`ModelScorer::run`], builds the prompt, runs the engine and applies the head.
 //! `ask` and the self-check of model loading both go through it, so what is verified at load time
@@ -6,6 +6,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use crate::control::{Control, NoControl};
 use crate::engine::Forward;
 use crate::error::{Error, Result};
 use crate::heads::Head;
@@ -168,6 +169,21 @@ impl ModelScorer {
     /// [`Error::Unsupported`] before the engine is touched; [`Error::Inference`] or
     /// [`Error::NonFiniteHidden`] from the engine; nothing is returned partially.
     pub fn run(&self, state: &State, questions: &Questions) -> Result<Run> {
+        self.run_with(state, questions, &NoControl)
+    }
+
+    /// Like [`run`](Self::run), asking `control` before each row of the request (and while the
+    /// request waits for the engine): if it says stop, the call ends with [`Error::Cancelled`] and
+    /// no result. A row that has started is never interrupted.
+    ///
+    /// # Errors
+    /// [`Error::Cancelled`] as said; otherwise as [`run`](Self::run).
+    pub fn run_with(
+        &self,
+        state: &State,
+        questions: &Questions,
+        control: &dyn Control,
+    ) -> Result<Run> {
         let types: Vec<&str> = self.question_types.iter().map(String::as_str).collect();
         let limits = RequestLimits {
             model: &self.model,
@@ -182,9 +198,9 @@ impl ModelScorer {
         let has_cuts = (0..prompt.branches().len())
             .any(|i| prompt.row_cuts(i).is_some_and(|cuts| !cuts.is_empty()));
         let logits = if self.prefix_limit > 0 && has_cuts {
-            self.score_segmented(questions, &prompt)?
+            self.score_segmented(questions, &prompt, control)?
         } else {
-            self.score_plain(questions, &prompt)?
+            self.score_plain(questions, &prompt, control)?
         };
         Ok(Run {
             input_ids: prompt.packed_ids(),
@@ -197,10 +213,12 @@ impl ModelScorer {
         &self,
         questions: &Questions,
         prompt: &Prompt,
+        control: &dyn Control,
     ) -> Result<Vec<(String, Vec<f64>)>> {
-        let mut session = self.forward.begin(prompt.state())?;
+        let mut session = self.forward.begin_with(prompt.state(), control)?;
         let mut logits = Vec::with_capacity(questions.len());
         for ((name, question), branch) in questions.iter().zip(prompt.branches()) {
+            control.checkpoint()?;
             let specs = self.head.outputs(question, branch);
             let outputs = session
                 .row(branch.ids(), &specs)
@@ -231,8 +249,17 @@ impl Scorer for ModelScorer {
     }
 
     fn score(&self, state: &State, questions: &Questions) -> Result<Vec<Vec<f64>>> {
+        self.score_with(state, questions, &NoControl)
+    }
+
+    fn score_with(
+        &self,
+        state: &State,
+        questions: &Questions,
+        control: &dyn Control,
+    ) -> Result<Vec<Vec<f64>>> {
         Ok(self
-            .run(state, questions)?
+            .run_with(state, questions, control)?
             .questions
             .into_iter()
             .map(|(_, z)| z)
@@ -282,6 +309,9 @@ mod prefix_tests;
 
 #[cfg(test)]
 mod cache_tests;
+
+#[cfg(test)]
+mod pool_tests;
 
 #[cfg(test)]
 mod tests {
