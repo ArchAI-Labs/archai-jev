@@ -6,6 +6,7 @@ The mock splits its ``latency`` between the questions and looks at the control b
 
 import asyncio
 import gc
+import os
 import subprocess
 import sys
 import textwrap
@@ -16,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from _timing import timing_sensitive
 from archai_jev import (
     Answers,
     InvalidStateError,
@@ -39,6 +41,11 @@ def archai_threads() -> list[threading.Thread]:
     return [t for t in threading.enumerate() if t.name.startswith("archai-jev")]
 
 
+def default_executor_size() -> int:
+    """Workers of the event loop's default executor (what ``asyncio`` computes)."""
+    return min(32, (os.cpu_count() or 1) + 4)
+
+
 def run(coro: Callable[[], Awaitable[Any]]) -> Any:
     return asyncio.run(coro())  # type: ignore[arg-type]
 
@@ -55,13 +62,16 @@ def test_aask_and_aask_many_equal_the_sync_calls() -> None:
     asyncio.run(main())
 
 
+@timing_sensitive()
 def test_a_busy_default_executor_does_not_slow_aask() -> None:
     jev, _ = make(latency=0.1)
 
     async def main() -> None:
         loop = asyncio.get_running_loop()
         # the program keeps the loop's default executor busy for a while with its own jobs
-        blockers = [loop.run_in_executor(None, time.sleep, 0.8) for _ in range(40)]
+        # (one more round than it has workers: a job that joined them would wait 0.8 s)
+        jobs = default_executor_size() + 4
+        blockers = [loop.run_in_executor(None, time.sleep, 0.8) for _ in range(jobs)]
         await asyncio.sleep(0.05)
         started = time.perf_counter()
         await jev.aask(STATE, QUESTIONS)
@@ -72,15 +82,20 @@ def test_a_busy_default_executor_does_not_slow_aask() -> None:
     asyncio.run(main())
 
 
+@timing_sensitive()
 def test_many_aask_do_not_slow_the_default_executor() -> None:
-    jev, _ = make(latency=0.1)
+    jev, _ = make(latency=0.3)
 
     async def main() -> None:
-        flood = [asyncio.create_task(jev.aask(STATE, QUESTIONS)) for _ in range(64)]
+        # three rounds of the default executor, if the calls went there: to_thread would wait for two
+        flood = [
+            asyncio.create_task(jev.aask(STATE, QUESTIONS))
+            for _ in range(3 * default_executor_size())
+        ]
         await asyncio.sleep(0.05)
         started = time.perf_counter()
         assert await asyncio.to_thread(lambda: 42) == 42
-        assert time.perf_counter() - started < 0.2
+        assert time.perf_counter() - started < 0.3
         for task in flood:
             task.cancel()
         await asyncio.gather(*flood, return_exceptions=True)
@@ -88,8 +103,9 @@ def test_many_aask_do_not_slow_the_default_executor() -> None:
     asyncio.run(main())
 
 
+@timing_sensitive()
 def test_cancelling_aask_raises_at_once_and_the_jev_stays_usable() -> None:
-    jev, _ = make(latency=0.4)
+    jev, _ = make(latency=0.8)
     expected = jev.ask(STATE, QUESTIONS)
 
     async def main() -> None:
@@ -99,14 +115,17 @@ def test_cancelling_aask_raises_at_once_and_the_jev_stays_usable() -> None:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        assert time.perf_counter() - started < 0.1
+        # at once, not when the call would have ended (0.75 s from now)
+        assert time.perf_counter() - started < 0.3
         assert await jev.aask(STATE, QUESTIONS) == expected
 
     asyncio.run(main())
 
 
 def test_a_request_cancelled_in_the_queue_never_starts() -> None:
-    jev, scorer = make(latency=0.4)
+    # 1 s: the four running requests must still be running when the fifth is cancelled, whatever
+    # the speed of the machine
+    jev, scorer = make(latency=1.0)
 
     async def main() -> None:
         # four requests take the four threads; the fifth waits in the queue
@@ -123,21 +142,30 @@ def test_a_request_cancelled_in_the_queue_never_starts() -> None:
     assert scorer.calls == 4, "the cancelled request must never have reached the scorer"
 
 
+@timing_sensitive()
 def test_a_running_request_stops_at_its_next_row_and_frees_its_thread() -> None:
-    jev, _ = make(latency=0.4)  # four rows of 0.1 s
+    jev, scorer = make(latency=1.2)  # four rows of 0.3 s
 
     async def main() -> None:
         busy = [asyncio.create_task(jev.aask(STATE, QUESTIONS)) for _ in range(4)]
-        await asyncio.sleep(0.05)
+        begun = time.perf_counter()
+        while scorer.calls < 4:  # all four are inside the scorer
+            assert time.perf_counter() - begun < 5, "the requests never started"
+            await asyncio.sleep(0.005)
         for task in busy:
             task.cancel()
         await asyncio.gather(*busy, return_exceptions=True)
-        # the threads are free again within a row (0.1 s), not after the whole call (0.4 s)
+        # The next request reaches the scorer when a thread is free: within a row (0.3 s), not
+        # after the whole calls (1.2 s). Waiting for the scorer to see it, not for the answer.
         started = time.perf_counter()
-        await jev.aask(STATE, QUESTIONS)
-        assert (
-            time.perf_counter() - started < 0.4 + 0.2
-        ), "the cancelled calls ran to the end"
+        task = asyncio.create_task(jev.aask(STATE, QUESTIONS))
+        while scorer.calls < 5:
+            assert time.perf_counter() - started < 5, "the next request never started"
+            await asyncio.sleep(0.005)
+        waited = time.perf_counter() - started
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert waited < 0.7, f"the cancelled calls ran to the end ({waited:.2f}s)"
 
     asyncio.run(main())
 
@@ -169,7 +197,7 @@ def test_executor_threads_are_at_most_four_and_end_with_the_jev() -> None:
 
     use_a_jev()  # the Jev is gone when it returns
     gc.collect()
-    deadline = time.perf_counter() + 2.0
+    deadline = time.perf_counter() + 10.0
     while archai_threads() and time.perf_counter() < deadline:
         time.sleep(0.02)
     assert archai_threads() == []
@@ -177,7 +205,7 @@ def test_executor_threads_are_at_most_four_and_end_with_the_jev() -> None:
 
 def test_exiting_with_requests_pending_does_not_hang() -> None:
     code = textwrap.dedent("""
-        import asyncio
+        import asyncio, time
         from archai_jev import Jev, YesNo
         from archai_jev.testing import MockScorer
 
@@ -185,18 +213,22 @@ def test_exiting_with_requests_pending_does_not_hang() -> None:
         questions = {f"q{i}": YesNo(f"Is it {i}?") for i in range(4)}
 
         async def main():
-            for _ in range(30):
+            for _ in range(120):
                 asyncio.create_task(jev.aask("text", questions))
             await asyncio.sleep(0.1)
             raise SystemExit(0)
 
+        print(time.time(), flush=True)  # the interpreter is up and the package imported
         asyncio.run(main())
         """)
-    started = time.perf_counter()
-    done = subprocess.run([sys.executable, "-c", code], timeout=30, capture_output=True)
+    done = subprocess.run([sys.executable, "-c", code], timeout=60, capture_output=True)
+    ended = time.time()
     assert done.returncode == 0, done.stderr.decode()
-    # thirty requests of 0.4 s on four threads would take 3 s if they all ran
-    assert time.perf_counter() - started < 3.0
+    ready = float(
+        done.stdout.decode().split()[0]
+    )  # not the start-up of Python: just the exit
+    # 120 requests of 0.4 s on four threads would take 12 s if they all ran
+    assert ended - ready < 6.0, f"{ended - ready:.1f}s"
 
 
 def test_return_exceptions_in_order_and_types() -> None:

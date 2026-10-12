@@ -154,9 +154,23 @@ impl Demand<'_> {
     /// Take one state off the demand; the request that asks for the slot takes it, under the
     /// same lock that creates its ticket, so the queue never dips.
     fn take_one(&self) -> bool {
-        self.remaining
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |r| r.checked_sub(1))
-            .is_ok()
+        // A `compare_exchange` loop, not `fetch_update`: Rust 1.99 deprecates that name (it is
+        // now `try_update`) and CI builds with `-D warnings`. The loop needs neither name.
+        let mut current = self.remaining.load(Ordering::SeqCst);
+        loop {
+            if current == 0 {
+                return false;
+            }
+            match self.remaining.compare_exchange_weak(
+                current,
+                current - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return true,
+                Err(seen) => current = seen,
+            }
+        }
     }
 }
 

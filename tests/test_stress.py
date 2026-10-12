@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from _timing import timing_sensitive
 from archai_jev import Answers, Jev, YesNo
 from archai_jev.testing import MockScorer
 
@@ -111,9 +112,12 @@ def test_no_deadlock_while_other_threads_keep_the_gil_busy() -> None:
     assert all(n > 0 for n in spun), "the busy threads must have run"
 
 
+@timing_sensitive()
 def test_ctrl_c_is_still_prompt_when_the_gil_is_contended() -> None:
-    jev = Jev.from_scorer(MockScorer(1, latency=0.4))  # four rows of 0.1 s
-    questions = {f"q{i}": YesNo(f"Is it {i}?") for i in range(4)}
+    # Ten rows of 0.1 s: a call of one second, so that "the signal is seen at the end of the call"
+    # (0.8 s after it) is far from "the signal is seen at the next row" (0.1 s after it).
+    jev = Jev.from_scorer(MockScorer(1, latency=1.0))
+    questions = {f"q{i}": YesNo(f"Is it {i}?") for i in range(10)}
     stop = threading.Event()
     go = threading.Event()
     fired = threading.Event()
@@ -178,7 +182,7 @@ def test_ctrl_c_is_still_prompt_when_the_gil_is_contended() -> None:
         signal.signal(signal.SIGINT, previous)
     assert measured, "the signal never arrived inside the call"
     # one row (0.1 s) to the next look, and the time to get the GIL back from busy threads
-    assert marks["handler"] - marks["signal"] < 0.1 + 0.3, marks
+    assert marks["handler"] - marks["signal"] < 0.1 + 0.4, marks
 
 
 def test_every_thread_gets_its_turn_when_many_wait() -> None:

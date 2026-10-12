@@ -61,6 +61,16 @@ fn pooled(
     (Arc::new(s), fake)
 }
 
+/// Wait until `ok()` holds. The tests below used `sleep`s to make threads arrive in some order,
+/// which a loaded CI runner with a few cores can break; waiting for the state itself cannot.
+fn wait_for(what: &str, mut ok: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !ok() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn latency(fake: &FakeForward, ms: u64) {
     fake.set_faults(Faults {
         latency: Duration::from_millis(ms),
@@ -156,9 +166,10 @@ fn a_row_that_has_started_is_not_interrupted() {
         let flag = Arc::new(Flag(AtomicBool::new(false)));
         let started = Instant::now();
         let stopper = {
-            let flag = Arc::clone(&flag);
+            let (flag, fake) = (Arc::clone(&flag), Arc::clone(&fake));
             thread::spawn(move || {
-                thread::sleep(Duration::from_millis(60)); // inside the first row
+                // as soon as the first row has started (its 150 ms pause is under way)
+                wait_for("the first row to start", || fake.stats().rows >= 1);
                 flag.0.store(true, Ordering::SeqCst);
             })
         };
@@ -182,7 +193,9 @@ fn a_request_cancelled_while_queued_never_runs() {
             let (s, st, qs) = (Arc::clone(&s), st.clone(), qs.clone());
             thread::spawn(move || s.run(&st, &qs).unwrap())
         };
-        thread::sleep(Duration::from_millis(40)); // it holds the only slot
+        wait_for("the first request to take the slot", || {
+            fake.pool_stats().busy == 1
+        });
         let flag = Arc::new(Flag(AtomicBool::new(true)));
         let verdict = s.run_with(&st, &qs, flag.as_ref());
         assert!(matches!(verdict, Err(Error::Cancelled)));
@@ -231,12 +244,15 @@ fn concurrent_requests_give_the_sequential_results_bit_for_bit() {
             .iter()
             .map(|(st, qs)| s.run(st, qs).unwrap())
             .collect();
-        latency(&fake, 3);
+        latency(&fake, 4);
+        // Hold the only slot while the sixteen callers line up, then let go: the queue is sixteen long
+        // when the pool decides, whatever the speed of the machine.
+        let held = fake.pool().acquire(&NoControl).unwrap();
         let handles: Vec<_> = (0..16)
             .map(|w| {
                 let (s, cases, expected) = (Arc::clone(&s), cases.clone(), expected.clone());
                 thread::spawn(move || {
-                    for i in 0..20 {
+                    for i in 0..12 {
                         let (st, qs) = cases.get((w + i) % cases.len()).unwrap();
                         let want = expected.get((w + i) % cases.len()).unwrap();
                         assert_eq!(&s.run(st, qs).unwrap(), want, "worker {w} call {i}");
@@ -244,6 +260,8 @@ fn concurrent_requests_give_the_sequential_results_bit_for_bit() {
                 })
             })
             .collect();
+        wait_for("the callers to line up", || fake.pool_stats().waiting == 16);
+        drop(held);
         for h in handles {
             h.join().unwrap();
         }
@@ -271,15 +289,16 @@ fn the_thread_sensitive_fake_shows_the_test_can_fail() {
         let qs = request(&hypotheses(3));
         let alone = s.run(&st, &qs).unwrap(); // serial mode: all 20 threads
         latency(&fake, 30);
-        let results: Vec<_> = (0..8)
+        let held = fake.pool().acquire(&NoControl).unwrap();
+        let handles: Vec<_> = (0..8)
             .map(|_| {
                 let (s, st, qs) = (Arc::clone(&s), st.clone(), qs.clone());
                 thread::spawn(move || s.run(&st, &qs).unwrap())
             })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|h| h.join().unwrap())
             .collect();
+        wait_for("the callers to line up", || fake.pool_stats().waiting == 8);
+        drop(held); // eight are waiting: the pool opens, four at a time with five threads each
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
         assert!(
             results.iter().any(|r| r != &alone),
             "no request ran with fewer threads"

@@ -24,6 +24,21 @@ fn ms(n: u64) -> Duration {
     Duration::from_millis(n)
 }
 
+/// Wait until the pool's numbers satisfy `pred`. These tests used to rely on `sleep`s to make
+/// threads arrive in a given order, which a loaded CI runner with a few cores can break; waiting
+/// for the state itself cannot.
+fn wait_until(pool: &SlotPool, what: &str, pred: impl Fn(&PoolStats) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !pred(&pool.stats()) {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}: {:?}",
+            pool.stats()
+        );
+        thread::sleep(ms(1));
+    }
+}
+
 /// Stops after it has been asked `limit` times.
 struct StopAfter {
     asked: AtomicUsize,
@@ -73,6 +88,11 @@ fn contend(pool: &Arc<SlotPool>, n: usize, hold: Duration) -> (usize, Vec<usize>
                 let inside = now.fetch_add(1, Ordering::SeqCst) + 1;
                 max.fetch_max(inside, Ordering::SeqCst);
                 seen.lock().unwrap().push(slot.threads());
+                // nobody lets go before everybody has arrived: the arrival skew of a loaded machine
+                // cannot change what the pool sees
+                wait_until(&pool, "every caller to arrive", |s| {
+                    s.busy + s.waiting + (s.completed as usize) == n
+                });
                 thread::sleep(hold);
                 now.fetch_sub(1, Ordering::SeqCst);
                 drop(slot);
@@ -157,13 +177,14 @@ fn requests_are_served_in_arrival_order() {
         let order = Arc::new(Mutex::new(Vec::new()));
         let mut handles = Vec::new();
         for id in 1..=5usize {
-            let (pool, order) = (Arc::clone(&pool), Arc::clone(&order));
+            let (worker, order) = (Arc::clone(&pool), Arc::clone(&order));
             handles.push(thread::spawn(move || {
-                let slot = pool.acquire(&NoControl).unwrap();
+                let slot = worker.acquire(&NoControl).unwrap();
                 order.lock().unwrap().push(id);
                 drop(slot);
             }));
-            thread::sleep(ms(25)); // they arrive one after the other
+            // the next one is started when this one has its ticket: they arrive one after the other
+            wait_until(&pool, "a ticket", |s| s.waiting == id);
         }
         drop(first);
         for h in handles {
@@ -183,18 +204,18 @@ fn a_request_that_gives_up_does_not_hold_back_the_ones_behind() {
             let pool = Arc::clone(&pool);
             thread::spawn(move || pool.acquire(&NoControl).map(|s| s.threads()))
         };
-        thread::sleep(ms(60));
+        wait_until(&pool, "the head to wait", |s| s.waiting == 1);
         let flag = Arc::new(Flag(AtomicBool::new(false)));
         let quitter = {
             let (pool, flag) = (Arc::clone(&pool), Arc::clone(&flag));
             thread::spawn(move || pool.acquire(flag.as_ref()).map(|_| ()))
         };
-        thread::sleep(ms(60));
+        wait_until(&pool, "the quitter to wait", |s| s.waiting == 2);
         let follower = {
             let pool = Arc::clone(&pool);
             thread::spawn(move || pool.acquire(&NoControl).map(|s| s.threads()))
         };
-        thread::sleep(ms(60));
+        wait_until(&pool, "the follower to wait", |s| s.waiting == 3);
         flag.0.store(true, Ordering::SeqCst);
         assert!(matches!(quitter.join().unwrap(), Err(Error::Cancelled)));
         assert_eq!(
@@ -248,15 +269,18 @@ fn many_threads_many_requests_no_block_and_k_respected() {
         let now = Arc::new(AtomicUsize::new(0));
         let max = Arc::new(AtomicUsize::new(0));
         let total = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(24));
         let handles: Vec<_> = (0..24)
             .map(|w| {
-                let (pool, now, max, total) = (
+                let (pool, now, max, total, barrier) = (
                     Arc::clone(&pool),
                     Arc::clone(&now),
                     Arc::clone(&max),
                     Arc::clone(&total),
+                    Arc::clone(&barrier),
                 );
                 thread::spawn(move || {
+                    barrier.wait();
                     for i in 0..40usize {
                         let slot = pool.acquire(&NoControl).unwrap();
                         let inside = now.fetch_add(1, Ordering::SeqCst) + 1;

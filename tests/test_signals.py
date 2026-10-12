@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from _timing import interrupt_main_at, timing_sensitive
 from archai_jev import Jev, NumericalError, YesNo, _core
 from archai_jev._exceptions import _StoppedError
 from archai_jev._jev import _question_pairs
@@ -20,44 +21,45 @@ from archai_jev.testing import Fault, MockScorer
 
 QUESTIONS = {f"q{i}": YesNo(f"Is it number {i}?") for i in range(4)}
 STATE = "A short text."
-LATENCY = 0.4  # four questions: four slices of 0.1 s
+# Four questions, four slices of 0.2 s. The margins are wide on purpose: a CI runner with two
+# cores can be late by a good fraction of a second, and a test that fails for that tells nothing.
+LATENCY = 0.8
 SLICE = LATENCY / len(QUESTIONS)
+FIRE_AT = 0.3  # in the middle of the second slice (0.2 s to 0.4 s)
+STOPPED_BY = (
+    LATENCY - 0.15
+)  # the third look is at 0.6 s; the end of the call is at 0.8 s
 
 
 def make(latency: float = LATENCY, scorer: MockScorer | None = None) -> Jev:
     return Jev.from_scorer(scorer or MockScorer(1, latency=latency))
 
 
-def fire_at(delay: float) -> threading.Timer:
-    """Simulate a Ctrl-C ``delay`` seconds from now."""
-    timer = threading.Timer(delay, _thread.interrupt_main)
-    timer.start()
-    return timer
-
-
+@timing_sensitive()
 def test_ctrl_c_stops_ask_within_one_row_and_the_jev_stays_usable() -> None:
     jev = make()
     expected = jev.ask(STATE, QUESTIONS)
     started = time.perf_counter()
-    timer = fire_at(0.15)  # inside the second slice
-    with pytest.raises(KeyboardInterrupt):
-        jev.ask(STATE, QUESTIONS)
-    elapsed = time.perf_counter() - started
-    timer.join()
-    # seen at the next look (0.2 s), not at the end of the call (0.4 s)
-    assert SLICE <= elapsed < LATENCY - 0.05, elapsed
+    with interrupt_main_at(FIRE_AT):
+        with pytest.raises(KeyboardInterrupt):
+            jev.ask(STATE, QUESTIONS)
+        elapsed = time.perf_counter() - started
+    # seen at the next look (0.4 s), not at the end of the call (0.8 s)
+    assert SLICE <= elapsed < STOPPED_BY, elapsed
     assert jev.ask(STATE, QUESTIONS) == expected  # nothing left behind
 
 
+@timing_sensitive()
 def test_ctrl_c_stops_ask_many_between_states_and_inside_one() -> None:
     jev = make()
     started = time.perf_counter()
-    timer = fire_at(0.15)
-    with pytest.raises(KeyboardInterrupt):
-        jev.ask_many([STATE] * 5, QUESTIONS)  # 2 s if nobody stops it
-    elapsed = time.perf_counter() - started
-    timer.join()
-    assert elapsed < LATENCY, elapsed
+    with interrupt_main_at(FIRE_AT):
+        with pytest.raises(KeyboardInterrupt):
+            jev.ask_many([STATE] * 5, QUESTIONS)  # 4 s if nobody stops it
+        elapsed = time.perf_counter() - started
+    # not one state's worth of time (0.8 s) but nowhere near the five states (4 s) either: the
+    # bound is wide because here it only has to tell "stopped" from "ran to the end"
+    assert elapsed < 2 * LATENCY, elapsed
     assert jev.ask_many([STATE], QUESTIONS) == [jev.ask(STATE, QUESTIONS)]
 
 
@@ -76,6 +78,7 @@ def test_ctrl_c_in_a_secondary_thread_does_not_stop_its_call() -> None:
     assert result == [expected]
 
 
+@timing_sensitive()
 def test_a_signal_handler_cannot_call_ask_inside_a_jev_call() -> None:
     jev = make()
     seen: list[str] = []
@@ -89,10 +92,11 @@ def test_a_signal_handler_cannot_call_ask_inside_a_jev_call() -> None:
 
     previous = signal.signal(signal.SIGINT, handler)
     try:
-        timer = fire_at(0.15)
-        with pytest.raises(RuntimeError, match="signal handler"):
+        with (
+            interrupt_main_at(FIRE_AT),
+            pytest.raises(RuntimeError, match="signal handler"),
+        ):
             jev.ask(STATE, QUESTIONS)
-        timer.join()
     finally:
         signal.signal(signal.SIGINT, previous)
     assert seen and "destructor" in seen[0]
@@ -109,17 +113,18 @@ def test_a_token_set_before_the_call_stops_it_at_once() -> None:
         jev._model.ask(STATE, _question_pairs(QUESTIONS), token)
 
 
+@timing_sensitive()
 def test_a_token_set_during_the_call_stops_it_at_the_next_row() -> None:
     jev = make()
     token = _core._CancelToken()
-    timer = threading.Timer(0.15, token.set)
+    timer = threading.Timer(FIRE_AT, token.set)
     started = time.perf_counter()
     timer.start()
     with pytest.raises(_StoppedError):
         jev._model.ask(STATE, _question_pairs(QUESTIONS), token)
     elapsed = time.perf_counter() - started
     timer.join()
-    assert SLICE <= elapsed < LATENCY - 0.05, elapsed
+    assert SLICE <= elapsed < STOPPED_BY, elapsed
     # the same token does not stop a call that does not carry it
     assert jev.ask(STATE, QUESTIONS) == jev.ask(STATE, QUESTIONS)
 

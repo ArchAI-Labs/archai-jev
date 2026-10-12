@@ -383,10 +383,14 @@ mod tests {
             slow.score_with(&st, &q, &stop),
             Err(Error::Cancelled)
         ));
+        // exactly one slice was slept (a sleep never returns early); how much longer it took is up to
+        // the machine, so there is no upper bound on the clock: the count of looks says it
         let spent = started.elapsed();
-        assert!(
-            spent >= Duration::from_millis(35) && spent < Duration::from_millis(100),
-            "{spent:?}"
+        assert!(spent >= Duration::from_millis(35), "{spent:?}");
+        assert_eq!(
+            stop.0.load(Ordering::SeqCst),
+            2,
+            "stopped at the second look"
         );
         // with no pause there is still a look at the start
         let fast = MockScorer::new(1);
