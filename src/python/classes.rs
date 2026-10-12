@@ -1,4 +1,4 @@
-﻿//! Python classes and functions of `archai_jev._core`: thin wrappers around the core.
+//! Python classes and functions of `archai_jev._core`: thin wrappers around the core.
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,7 +24,7 @@ type Obj<'py> = Bound<'py, PyAny>;
 /// A validated question. Opaque: the public classes of `archai_jev` wrap it.
 #[pyclass(frozen, name = "_Question", module = "archai_jev._core")]
 pub struct PyQuestion {
-    inner: Question,
+    pub(crate) inner: Question,
 }
 
 fn entry(obj: &Obj<'_>, field: &str) -> Result<TextEntry, Error> {
@@ -195,7 +195,26 @@ pub fn render_state(state: &Obj<'_>) -> PyResult<String> {
         .to_string())
 }
 
-/// Temperature-scaled softmax of raw logits.
+/// Temperature-scaled softmax of raw logits: ``softmax(logits / temperature)``, stable for
+/// huge logits.
+///
+/// Args:
+///     logits: Finite logits, at least one.
+///     temperature: A finite number greater than 0. Above 1 flattens the distribution, below 1
+///         sharpens it.
+///
+/// Returns:
+///     The probabilities, in the order of ``logits``; they sum to 1.
+///
+/// Raises:
+///     ValueError: ``logits`` is empty or has a non-finite value, or ``temperature`` is not a
+///         finite number greater than 0.
+///
+/// Examples:
+///     >>> calibrated_softmax([0.0, 0.0])
+///     [0.5, 0.5]
+///     >>> [round(p, 3) for p in calibrated_softmax([2.0, 1.0, 0.1])]
+///     [0.659, 0.242, 0.099]
 #[pyfunction]
 #[pyo3(signature = (logits, temperature = 1.0))]
 pub fn calibrated_softmax(logits: Vec<f64>, temperature: f64) -> PyResult<Vec<f64>> {
@@ -354,17 +373,26 @@ impl PyMockScorer {
 /// A model ready to answer: wraps a scorer. Python's `Jev` holds one.
 #[pyclass(frozen, name = "_Model", module = "archai_jev._core")]
 pub struct PyModel {
-    scorer: Arc<dyn Scorer>,
+    /// What answers (it may be a `Recalibrated` over `base`).
+    pub(crate) scorer: Arc<dyn Scorer>,
+    /// The scorer the model was loaded with: `with_temperature` always builds over this one.
+    pub(crate) base: Arc<dyn Scorer>,
+    /// Fingerprints of the records the calibration of this model was fitted on, if known.
+    pub(crate) provenance: Option<Arc<[u64]>>,
 }
 
 impl PyModel {
     /// Wrap a loaded model's scorer.
     pub(crate) fn wrap(scorer: Arc<dyn Scorer>) -> Self {
-        PyModel { scorer }
+        PyModel {
+            base: Arc::clone(&scorer),
+            scorer,
+            provenance: None,
+        }
     }
 }
 
-fn build_questions(questions: &[(String, Py<PyQuestion>)]) -> Result<Questions, Error> {
+pub(crate) fn build_questions(questions: &[(String, Py<PyQuestion>)]) -> Result<Questions, Error> {
     Questions::new(
         questions
             .iter()
@@ -407,9 +435,7 @@ impl PyModel {
     /// A model backed by the mock scorer.
     #[staticmethod]
     fn from_mock(scorer: &PyMockScorer) -> Self {
-        PyModel {
-            scorer: scorer.inner.clone(),
-        }
+        PyModel::wrap(scorer.inner.clone())
     }
 
     /// The prefix memory as `(limit_bytes, bytes, entries, hits, misses, evictions,
@@ -513,6 +539,50 @@ impl PyModel {
         }
         Ok(out)
     }
+
+    /// Evaluate on a validated dataset; returns plain tuples (see `_evaluation.py`).
+    #[pyo3(signature = (dataset, n_bins, bootstrap_samples, seed, cancel=None))]
+    fn evaluate<'py>(
+        &self,
+        py: Python<'py>,
+        dataset: &super::evaluation::PyDataset,
+        n_bins: &Obj<'py>,
+        bootstrap_samples: &Obj<'py>,
+        seed: &Obj<'py>,
+        cancel: Option<Py<PyCancelToken>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.evaluate_dataset(py, dataset, n_bins, bootstrap_samples, seed, cancel)?
+            .into_pyobject(py)
+            .map(Bound::into_any)
+    }
+
+    /// Study the calibration on a validated dataset; returns plain tuples.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (dataset, folds, seed, question_types, bounds, cancel=None))]
+    fn calibrate<'py>(
+        &self,
+        py: Python<'py>,
+        dataset: &super::evaluation::PyDataset,
+        folds: &Obj<'py>,
+        seed: &Obj<'py>,
+        question_types: Option<Vec<String>>,
+        bounds: (f64, f64),
+        cancel: Option<Py<PyCancelToken>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.calibrate_dataset(py, dataset, folds, seed, question_types, bounds, cancel)?
+            .into_pyobject(py)
+            .map(Bound::into_any)
+    }
+
+    /// The same model with this temperature, as a calibration given by the user.
+    #[pyo3(signature = (temperature, provenance=None))]
+    fn with_temperature(
+        &self,
+        temperature: f64,
+        provenance: Option<Vec<u64>>,
+    ) -> PyResult<PyModel> {
+        self.with_temperature_value(temperature, provenance)
+    }
 }
 
 thread_local! {
@@ -523,10 +593,10 @@ thread_local! {
 
 /// A signal handler that calls `ask` while the call it interrupted still holds the model would
 /// wait for that call for ever. Refuse it, whatever the size of the pool.
-fn refuse_reentrant_call() -> PyResult<()> {
+pub(crate) fn refuse_reentrant_call() -> PyResult<()> {
     if IN_SIGNAL_CHECK.with(Cell::get) {
         return Err(PyRuntimeError::new_err(
-            "Jev.ask() cannot be called from a signal handler or a destructor running inside another Jev call",
+            "Jev.ask(), evaluate() and calibrate() cannot be called from a signal handler or a destructor running inside another Jev call",
         ));
     }
     Ok(())
@@ -555,7 +625,7 @@ pub struct PyCancelToken {
 }
 
 impl PyCancelToken {
-    fn flag(&self) -> Arc<CancelFlag> {
+    pub(crate) fn flag(&self) -> Arc<CancelFlag> {
         Arc::clone(&self.flag)
     }
 }
@@ -583,7 +653,7 @@ impl PyCancelToken {
 /// The control of one call from Python: between two rows it looks at the token and, in the main
 /// thread, at pending signals (`Ctrl-C`). The GIL is taken only for that look, and never while a
 /// lock of the pool is held.
-struct PyControl {
+pub(crate) struct PyControl {
     token: Option<Arc<CancelFlag>>,
     /// Signals are only handled in the main thread of Python; elsewhere there is nothing to ask.
     main_thread: bool,
@@ -593,7 +663,7 @@ struct PyControl {
 }
 
 impl PyControl {
-    fn new(py: Python<'_>, token: Option<Arc<CancelFlag>>) -> PyResult<Self> {
+    pub(crate) fn new(py: Python<'_>, token: Option<Arc<CancelFlag>>) -> PyResult<Self> {
         let threading = py.import("threading")?;
         let main_thread = threading
             .call_method0("current_thread")?
@@ -608,7 +678,7 @@ impl PyControl {
 
     /// The result of a call that may have been stopped: the exception the signal handler raised,
     /// the private `_StoppedError` if the token stopped it, or the ordinary mapping of the error.
-    fn finish<T>(&self, py: Python<'_>, result: Result<T, Error>) -> PyResult<T> {
+    pub(crate) fn finish<T>(&self, py: Python<'_>, result: Result<T, Error>) -> PyResult<T> {
         match result {
             Ok(value) => Ok(value),
             Err(Error::Cancelled) => {

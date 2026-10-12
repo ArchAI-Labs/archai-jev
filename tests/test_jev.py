@@ -52,12 +52,12 @@ def scripted(calibrated: bool = True) -> Jev:
 def test_public_surface_is_exactly_the_documented_one() -> None:
     assert sorted(archai_jev.__all__) == sorted(
         [
-            "Answer", "Answers", "CacheInfo", "Choice", "ChoiceAnswer", "IncompatibleModelError",
-            "InferenceError", "InvalidQuestionError", "InvalidStateError", "JSONValue", "Jev", "JevError",
+            "Answer", "Answers", "CacheInfo", "CalibrationError", "Choice", "ChoiceAnswer", "IncompatibleModelError",
+            "InferenceError", "InvalidDatasetError", "InvalidQuestionError", "InvalidStateError", "JSONValue", "Jev", "JevError",
             "ModelDownloadError", "ModelInfo", "ModelVerificationError", "Noul",
-            "NumericalError", "Question", "Score", "ScoreAnswer", "State",
+            "NumericalError", "Question", "Score", "ScoreAnswer", "State", "TemperatureFit",
             "UnsupportedRequestError", "YesNo", "YesNoAnswer", "calibrated_softmax",
-            "list_models", "render_state",
+            "fit_temperature", "list_models", "render_state",
         ]
     )  # fmt: skip
     assert "_core" not in archai_jev.__all__

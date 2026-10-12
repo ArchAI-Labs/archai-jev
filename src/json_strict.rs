@@ -28,6 +28,9 @@ pub enum Json {
     Int(i128),
     /// A finite float.
     Float(f64),
+    /// An integer too big for `i128`, as its digits. Only `json_big::parse_with_big_ints`
+    /// produces it; `parse` never does.
+    BigInt(String),
     /// A string.
     Str(String),
     /// An array.
@@ -42,7 +45,7 @@ impl Json {
         match self {
             Json::Null => "null",
             Json::Bool(_) => "a boolean",
-            Json::Int(_) | Json::Float(_) => "a number",
+            Json::Int(_) | Json::Float(_) | Json::BigInt(_) => "a number",
             Json::Str(_) => "a string",
             Json::Array(_) => "an array",
             Json::Object(_) => "an object",
@@ -69,6 +72,7 @@ impl Json {
             Json::Null => out.push_str("null"),
             Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
             Json::Int(i) => out.push_str(&i.to_string()),
+            Json::BigInt(text) => out.push_str(text),
             Json::Float(f) => out.push_str(
                 &serde_json::Number::from_f64(*f)
                     .map_or_else(|| "null".to_string(), |n| n.to_string()),

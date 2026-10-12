@@ -1,0 +1,20 @@
+dataset: d88f2cc0032d457d   records: 30   questions: 90
+model               n     acc    conf     ece   brier   logloss
+base               90   0.478   0.728   0.250   0.722     1.153
+tuned              90   0.478   0.568   0.120   0.622     0.985
+base [choice]      30   0.433   0.665   0.232   0.739     1.241
+tuned [choice]     30   0.433   0.506   0.073   0.663     1.097
+base [score]       30   0.333   0.787   0.454   0.975     1.573
+tuned [score]      30   0.333   0.576   0.243   0.755     1.218
+base [yes_no]      30   0.667   0.731   0.064   0.453     0.647
+tuned [yes_no]     30   0.667   0.622   0.044   0.448     0.641
+notes:
+  - [base] overconfident: mean confidence 0.728 exceeds accuracy 0.478; consider Jev.calibrate() on held-out data
+  - [base] small sample: only 30 choice questions; ECE and the reliability bins are unreliable (try bootstrap_samples)
+  - [base] small sample: only 30 score questions; ECE and the reliability bins are unreliable (try bootstrap_samples)
+  - [base] small sample: only 30 yes_no questions; ECE and the reliability bins are unreliable (try bootstrap_samples)
+  - [base] the model has no declared calibration (calibrated=False); its probabilities are not guaranteed to be calibrated
+  - [tuned] overconfident: mean confidence 0.568 exceeds accuracy 0.478; consider Jev.calibrate() on held-out data
+  - [tuned] small sample: only 30 choice questions; ECE and the reliability bins are unreliable (try bootstrap_samples)
+  - [tuned] small sample: only 30 score questions; ECE and the reliability bins are unreliable (try bootstrap_samples)
+  - [tuned] small sample: only 30 yes_no questions; ECE and the reliability bins are unreliable (try bootstrap_samples)

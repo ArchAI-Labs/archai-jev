@@ -3,17 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 import threading
-from collections.abc import Callable, Iterable, Mapping
+import warnings
+from collections.abc import Callable, Collection, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Literal, overload
 
 from . import _core
 from ._answers import Answers, build_answers
+from ._calibration import TemperatureFit
+from ._evaluation import LabelledRecord, _prepare
 from ._exceptions import InvalidQuestionError, JevError, _StoppedError
 from ._questions import Choice, Score, YesNo
+from ._reports import (
+    CalibrationStudy,
+    EvaluationReport,
+    evaluation_from,
+    study_from,
+)
 
 __all__ = ["CacheInfo", "Jev", "ModelInfo", "list_models"]
 
@@ -483,6 +493,194 @@ class Jev:
             lambda token: self._ask_many(listed, questions, token, return_exceptions)
         )
         return result
+
+    def evaluate(
+        self,
+        dataset: Iterable[LabelledRecord | Mapping[str, Any]],
+        *,
+        n_bins: int = 10,
+        bootstrap_samples: int = 0,
+        seed: int = 0,
+    ) -> EvaluationReport:
+        """How accurate **and** calibrated the model is on your labelled data.
+
+        The whole dataset is validated before the model is asked anything. Each record goes
+        through the same path and the same checks as :meth:`ask`; the probabilities measured are
+        the ones the model returns, with its current temperature. All or nothing: a failure
+        (``NumericalError``, ``UnsupportedRequestError`` naming the record, ``Ctrl-C``) gives no
+        partial metrics. The model is not changed.
+
+        The confidence of the ECE is the largest probability of each row, not the ``confidence``
+        field of an answer (they are normalised differently). For a ``YesNo`` the row is
+        ``[1 - p, p]``.
+
+        Args:
+            dataset: An iterable of :class:`~archai_jev.evaluation.LabelledRecord` or of ``dict``
+                in the format of :func:`~archai_jev.evaluation.load_dataset`.
+            n_bins: Bins of the reliability diagram, an integer in ``1..=1000``.
+            bootstrap_samples: If greater than 0, 95 % intervals (``ci95``) from resampling whole
+                groups; 0 for none.
+            seed: Seed of the bootstrap, an integer in ``0 <= seed < 2**64``.
+
+        Returns:
+            An :class:`~archai_jev.evaluation.EvaluationReport`.
+
+        Raises:
+            InvalidDatasetError: The dataset is empty or a record or label is not valid.
+            InvalidStateError: A state is not usable (the message names the record).
+            InvalidQuestionError: A question is not valid (the message names the record).
+            UnsupportedRequestError: The model cannot answer a record (the message names it).
+            NumericalError: The model gave unusable numbers.
+            ValueError: ``n_bins``, ``bootstrap_samples`` or ``seed`` is out of range.
+            KeyboardInterrupt: ``Ctrl-C`` between two records; no result.
+
+        Warns:
+            UserWarning: Some of the records were also used to calibrate this model: the
+                metrics are optimistic.
+
+        Examples:
+            >>> from archai_jev import Jev, YesNo
+            >>> from archai_jev.evaluation import LabelledRecord
+            >>> from archai_jev.testing import MockScorer
+            >>> rows = [LabelledRecord(f"s{i}", {"ok": YesNo("Fine?")}, {"ok": True}) for i in range(4)]
+            >>> report = Jev.from_scorer(MockScorer(1)).evaluate(rows)
+            >>> report.n_records, sorted(report.by_type)
+            (4, ['yes_no'])
+        """
+        return self._evaluate_prepared(
+            _prepare(dataset), n_bins, bootstrap_samples, seed, None
+        )
+
+    def _evaluate_prepared(
+        self,
+        prepared: Any,
+        n_bins: int,
+        bootstrap_samples: int,
+        seed: int,
+        token: _core._CancelToken | None,
+    ) -> EvaluationReport:
+        raw = self._model.evaluate(prepared, n_bins, bootstrap_samples, seed, token)
+        report = evaluation_from(raw, self._info)
+        if report.calibration_overlap:
+            prefix = (
+                f"{report.calibration_overlap} of {report.n_records} records were also"
+            )
+            for note in report.notes:
+                if note.startswith(prefix):
+                    warnings.warn(note, UserWarning, stacklevel=3)
+        return report
+
+    def calibrate(
+        self,
+        dataset: Iterable[LabelledRecord | Mapping[str, Any]],
+        *,
+        folds: int = 5,
+        seed: int = 0,
+        question_types: Collection[str] | None = None,
+        bounds: tuple[float, float] = (0.01, 100.0),
+    ) -> CalibrationStudy:
+        """Find one global temperature for this model on your data, and measure what it gains.
+
+        The raw logits of every selected question are computed once. The temperature ``T*`` is
+        fitted on all of them (:func:`~archai_jev.fit_temperature`; it is **absolute**, whatever
+        the model's current temperature is). To say honestly what it gains, groups of records are
+        spread over ``folds`` folds and each fold is measured with a temperature fitted on the
+        *other* folds (``out_of_fold``); ``in_sample`` is optimistic and only shows how much.
+        The study does not change the model: apply it with :meth:`with_temperature`.
+
+        Args:
+            dataset: As for :meth:`evaluate`.
+            folds: Number of folds, an integer in ``2..=50``; at least as many groups are needed.
+            seed: Seed of the assignment of groups to folds.
+            question_types: A collection of ``"choice"``, ``"score"``, ``"yes_no"`` to calibrate
+                on only those kinds; ``None`` for all.
+            bounds: Limits for the temperature, as in :func:`~archai_jev.fit_temperature`.
+
+        Returns:
+            A :class:`~archai_jev.evaluation.CalibrationStudy`.
+
+        Raises:
+            CalibrationError: The data do not determine a temperature inside ``bounds`` (the
+                message of :func:`~archai_jev.fit_temperature`, with ``fold k: `` when it is a
+                fold that cannot be fitted). No study is returned.
+            InvalidDatasetError: The dataset is empty or a record or label is not valid.
+            UnsupportedRequestError: The model cannot answer a record (the message names it).
+            NumericalError: The model gave unusable numbers.
+            TypeError: ``question_types`` is a ``str``.
+            ValueError: ``folds``, ``seed``, ``question_types`` or ``bounds`` is out of range, or
+                there are fewer groups than folds.
+            KeyboardInterrupt: ``Ctrl-C`` between two records; no result.
+
+        Examples:
+            >>> from archai_jev import Jev, YesNo
+            >>> from archai_jev.evaluation import LabelledRecord
+            >>> from archai_jev.testing import MockScorer
+            >>> rows = [LabelledRecord(f"s{i}", {"ok": YesNo("Fine?")}, {"ok": i % 4 != 0}) for i in range(60)]
+            >>> study = Jev.from_scorer(MockScorer.scripted([[0.0, 2.0]])).calibrate(rows, folds=3)
+            >>> study.folds, len(study.fold_temperatures), round(study.temperature, 2)
+            (3, 3, 1.82)
+        """
+        if isinstance(question_types, str):
+            raise TypeError(
+                "question_types must be a collection of names such as ['yes_no'], not a str"
+            )
+        types = None if question_types is None else [str(t) for t in question_types]
+        raw = self._model.calibrate(_prepare(dataset), folds, seed, types, bounds, None)
+        return study_from(raw, folds, seed, bounds)
+
+    def with_temperature(
+        self, calibration: float | TemperatureFit | CalibrationStudy
+    ) -> Jev:
+        """A **new** ``Jev`` that applies this temperature; the original does not change.
+
+        The new one shares the model (nothing is copied), has ``model_info.temperature`` equal to
+        the new value and ``calibrated=True`` on every answer: it is a calibration you provided.
+        The temperature is absolute, so ``jev.with_temperature(a).with_temperature(b)`` is just
+        ``b``. Given a :class:`~archai_jev.evaluation.CalibrationStudy` it also remembers which
+        records fitted it, so :meth:`evaluate` can warn if you measure on them; a number or a
+        :class:`~archai_jev.TemperatureFit` has no such origin.
+
+        Args:
+            calibration: A temperature, a ``TemperatureFit`` or a ``CalibrationStudy``.
+
+        Returns:
+            A ``Jev``.
+
+        Raises:
+            TypeError: ``calibration`` is none of the three (a ``bool`` is not a temperature).
+            ValueError: The temperature is not a finite number greater than 0.
+
+        Examples:
+            >>> from archai_jev import Jev
+            >>> from archai_jev.testing import MockScorer
+            >>> jev = Jev.from_scorer(MockScorer(1))
+            >>> tuned = jev.with_temperature(2.5)
+            >>> (tuned.model_info.temperature, tuned.model_info.calibrated, jev.model_info.temperature)
+            (2.5, True, 1.0)
+        """
+        provenance: list[int] | None = None
+        if isinstance(calibration, CalibrationStudy):
+            temperature = calibration.temperature
+            provenance = list(calibration.record_fingerprints)
+        elif isinstance(calibration, TemperatureFit):
+            temperature = calibration.temperature
+        elif isinstance(calibration, (int, float)) and not isinstance(
+            calibration, bool
+        ):
+            temperature = float(calibration)
+        else:
+            raise TypeError(
+                "calibration must be a temperature (float), a TemperatureFit or a "
+                f"CalibrationStudy, got {type(calibration).__name__}"
+            )
+        model = self._model.with_temperature(temperature, provenance)
+        info = dataclasses.replace(
+            self._info,
+            temperature=temperature,
+            calibrated=True,
+            calibration_source="user",
+        )
+        return self._create(model, info)
 
     def __repr__(self) -> str:
         return f"Jev(model={self._info.name!r})"

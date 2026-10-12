@@ -60,6 +60,7 @@ dev = [
     "hypothesis",
     "maturin>=1.15,<2.0",
     "mypy",
+    "numpy",
     "pytest",
     "ruff",
 ]
@@ -98,6 +99,13 @@ python_version = "3.10"
 strict = true
 files = ["python", "tests"]
 mypy_path = "python"
+
+# numpy's own stubs use syntax newer than python_version = "3.10" and pytest imports them under
+# TYPE_CHECKING; the tests only use numpy as a source of arrays, so it is treated as untyped.
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

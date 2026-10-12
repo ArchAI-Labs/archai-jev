@@ -1,0 +1,13 @@
+model: mock (T=1.700, calibrated=True)   records: 3   questions: 9   dataset: c573825b495ab839
+scope                n     acc    conf     ece   brier   logloss
+overall              9   0.556   0.599   0.131   0.604     0.972
+choice               3   0.667   0.537   0.130   0.578     1.015
+score                3   0.333   0.619   0.285   0.789     1.265  (expected-level MAE 0.476)
+yes_no               3   0.667   0.643   0.024   0.446     0.638  (positive rate 0.667)
+question team        3   0.667   0.537   0.130   0.578     1.015
+question urgent      3   0.667   0.643   0.024   0.446     0.638  (positive rate 0.667)
+question prio        3   0.333   0.619   0.285   0.789     1.265  (expected-level MAE 0.476)
+notes:
+  - small sample: only 3 choice questions; ECE and the reliability bins are unreliable (try bootstrap_samples)
+  - small sample: only 3 score questions; ECE and the reliability bins are unreliable (try bootstrap_samples)
+  - small sample: only 3 yes_no questions; ECE and the reliability bins are unreliable (try bootstrap_samples)

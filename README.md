@@ -127,6 +127,52 @@ write each task. The prompt is limited to **512 tokens**.
 0.013 there, and says nothing about other data. Do not use it as a general-purpose safety filter or
 intent router.
 
+## Measuring and fitting calibration
+
+```python
+from archai_jev import fit_temperature
+from archai_jev.calibration import calibration_report
+
+# Logits and the right option of each row: the temperature that minimises the log-loss.
+fit = fit_temperature([[1.0, -1.0]] * 3, labels=[0, 0, 1])    # fit.temperature == 2 / ln 2
+
+# Probabilities (for instance from `ask`) and labels: ECE, Brier, log-loss, reliability bins.
+report = calibration_report([[0.9, 0.1], [0.8, 0.2], [0.3, 0.7], [0.6, 0.4]], labels=[0, 1, 1, 0])
+report.ece, report.brier, report.accuracy                      # 0.4, 0.45, 0.75
+```
+
+`fit_temperature` refuses (`CalibrationError`) when the data do not determine a temperature inside
+`bounds`: every row uniform, labels that always match the top option, or logits that carry no
+information about the labels. It never hands back a temperature at the edge. To recalibrate the
+answers of `ask`, fit the log-probabilities and multiply the result by
+`jev.model_info.temperature`; then pass it as `Jev.from_pretrained(temperature=...)`. The metrics
+have fixed definitions (top-label ECE with 10 bins closed on the right, multi-class Brier, natural
+log-loss without clipping), written in their docstrings; other libraries use other variants.
+`archai_jev.calibration` also has the public formulas of the answers and their batch versions.
+
+## Measuring a model on your own data
+
+```python
+from archai_jev import Jev
+from archai_jev.evaluation import compare, load_dataset, split_dataset
+
+dataset = load_dataset("tickets.jsonl")        # the JSONL of Kev: the request plus a "label" per question
+calibration_set, held_out = split_dataset(dataset, test_fraction=0.5, seed=0)   # by group
+
+jev = Jev.from_pretrained()
+print(jev.evaluate(held_out).table())          # accuracy and calibration per kind and per question
+
+study = jev.calibrate(calibration_set, folds=5)  # one temperature, with an out-of-fold estimate
+tuned = jev.with_temperature(study)              # a new Jev; calibrated=True; the original is unchanged
+print(compare({"as is": jev, "tuned": tuned}, held_out).table())
+```
+
+Labels are exact (`"returns"`, `True`, `2`), a file with a field it does not know is an error, and
+nothing is skipped: a wrong label would falsify every number. `evaluate` is all or nothing (no
+partial metrics) and warns if you measure on records that fitted the temperature. `compare` fails
+if a model cannot answer a record instead of comparing models on different subsets, and it ranks
+nothing. The metrics have fixed definitions (see their docstrings).
+
 ## Choosing and loading models
 
 ```python
@@ -160,7 +206,8 @@ returns the error of a failed state in its place instead of losing the rest.
 - One model ships (the demo above). Kev checkpoints and models of your own with a "pointer" head
   are not loadable yet; the engine and the head are implemented and tested, the file reader is not.
 - One request at a time per `Jev` (calls from several threads wait their turn).
-- `fit_temperature` and an evaluation API are planned, not in this release.
+- `jev.evaluate`, `jev.calibrate` and `compare` measure a model on **your** labelled data; the
+  default model is a demo of 4 tasks, so they only accept questions that are one of them.
 - **No performance claims are made.** Speed and memory were measured on a single machine during
   development and will be published once they are reproduced on a second one.
 

@@ -46,6 +46,8 @@ impl From<Error> for PyErr {
             Category::State => raise("InvalidStateError", message),
             Category::Question => raise("InvalidQuestionError", message),
             Category::Numerical => raise("NumericalError", message),
+            Category::Calibration => raise("CalibrationError", message),
+            Category::Dataset => raise("InvalidDatasetError", message),
             Category::Unsupported => raise("UnsupportedRequestError", message),
             Category::Inference => raise("InferenceError", message),
             Category::Incompatible => raise("IncompatibleModelError", message),

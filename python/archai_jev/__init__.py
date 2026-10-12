@@ -6,10 +6,13 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ._answers import Answer, Answers, ChoiceAnswer, ScoreAnswer, YesNoAnswer
+from ._calibration import TemperatureFit, fit_temperature
 from ._core import calibrated_softmax, render_state
 from ._exceptions import (
+    CalibrationError,
     IncompatibleModelError,
     InferenceError,
+    InvalidDatasetError,
     InvalidQuestionError,
     InvalidStateError,
     JevError,
@@ -29,10 +32,12 @@ __all__ = [
     "Answer",
     "Answers",
     "CacheInfo",
+    "CalibrationError",
     "Choice",
     "ChoiceAnswer",
     "IncompatibleModelError",
     "InferenceError",
+    "InvalidDatasetError",
     "InvalidQuestionError",
     "InvalidStateError",
     "JSONValue",
@@ -47,10 +52,12 @@ __all__ = [
     "Score",
     "ScoreAnswer",
     "State",
+    "TemperatureFit",
     "UnsupportedRequestError",
     "YesNo",
     "YesNoAnswer",
     "calibrated_softmax",
+    "fit_temperature",
     "list_models",
     "render_state",
 ]

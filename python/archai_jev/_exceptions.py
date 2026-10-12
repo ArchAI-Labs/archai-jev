@@ -7,8 +7,10 @@ Errors in how the API is *used* (wrong argument types) are plain ``TypeError``/`
 from __future__ import annotations
 
 __all__ = [
+    "CalibrationError",
     "IncompatibleModelError",
     "InferenceError",
+    "InvalidDatasetError",
     "InvalidQuestionError",
     "InvalidStateError",
     "JevError",
@@ -61,6 +63,24 @@ class NumericalError(JevError, RuntimeError):
     not a valid distribution. No result is returned."""
 
 
+class CalibrationError(JevError, ValueError):
+    """The data are valid but do not determine a calibration, so none is returned.
+
+    Raised by :func:`archai_jev.fit_temperature` when the best temperature is not inside
+    ``bounds``: every row is uniform, the labels always match the top option, or the logits
+    carry no usable information about the labels. Using a temperature at the edge would make
+    the probabilities look calibrated without any basis, so the function refuses.
+    """
+
+
+class InvalidDatasetError(JevError, ValueError):
+    """A labelled dataset cannot be used: an empty file, a line that is not valid JSON, fields the
+    format does not have, a label that does not fit its question, or one question name with two
+    types. The message names the file and line (``data.jsonl:41``) or the record (``record 3``).
+    Nothing is skipped and no partial dataset is returned.
+    """
+
+
 class InferenceError(JevError, RuntimeError):
     """The inference engine could not run: a decoding error, not enough memory for the context,
     or a CPU without the instructions the engine needs (AVX2, FMA, F16C, BMI2). No result is
@@ -74,6 +94,8 @@ class ModelDownloadError(JevError, OSError):
 
 for _cls in (
     JevError,
+    CalibrationError,
+    InvalidDatasetError,
     InvalidStateError,
     InvalidQuestionError,
     UnsupportedRequestError,

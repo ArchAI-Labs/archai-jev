@@ -1,0 +1,15 @@
+model: mock (T=1.000, calibrated=False)   records: 3   questions: 9   dataset: c573825b495ab839
+scope                n     acc    conf     ece   brier   logloss
+overall              9   0.333   0.839   0.506   1.143       inf
+choice               3   0.000   1.000   1.000   2.000       inf
+score                3   0.333   0.787   0.454   0.975     1.573  (expected-level MAE 0.560)
+yes_no               3   0.667   0.731   0.064   0.453     0.647  (positive rate 0.667)
+question team        3   0.000   1.000   1.000   2.000       inf
+question urgent      3   0.667   0.731   0.064   0.453     0.647  (positive rate 0.667)
+question prio        3   0.333   0.787   0.454   0.975     1.573  (expected-level MAE 0.560)
+notes:
+  - overconfident: mean confidence 0.839 exceeds accuracy 0.333; consider Jev.calibrate() on held-out data
+  - small sample: only 3 choice questions; ECE and the reliability bins are unreliable (try bootstrap_samples)
+  - small sample: only 3 score questions; ECE and the reliability bins are unreliable (try bootstrap_samples)
+  - small sample: only 3 yes_no questions; ECE and the reliability bins are unreliable (try bootstrap_samples)
+  - the model has no declared calibration (calibrated=False); its probabilities are not guaranteed to be calibrated

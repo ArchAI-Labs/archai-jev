@@ -1,0 +1,11 @@
+temperature: 2.233   folds: 3   groups: 30   rows: 180   dataset: d53f268108946d29
+arm                     n     acc    conf     ece   brier   logloss
+current               180   0.539   0.728   0.189   0.626     0.987
+in_sample             180   0.539   0.550   0.015   0.567     0.901
+out_of_fold           180   0.539   0.550   0.015   0.571     0.906
+choice current         60   0.467   0.665   0.199   0.675     1.091
+choice out_of_fold     60   0.467   0.489   0.023   0.623     1.027
+score current          60   0.533   0.787   0.254   0.703     1.173
+score out_of_fold      60   0.533   0.551   0.017   0.614     1.024
+yes_no current         60   0.617   0.731   0.114   0.499     0.697
+yes_no out_of_fold     60   0.617   0.610   0.007   0.475     0.668

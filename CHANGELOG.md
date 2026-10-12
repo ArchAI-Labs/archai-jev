@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Measure and calibrate a model on your own data** (`archai_jev.evaluation`, plus
+  `InvalidDatasetError`), all in Rust and with no new dependency:
+  - `load_dataset(path)` reads the JSONL format of Kev (the TypeSafe request plus a `label` per
+    question, optional `id` and `group`); `LabelledRecord` or `dict` records can be passed directly.
+    Labels are exact, unknown fields are an error with the list of names, errors name the file
+    and line, integers beyond 64 bits in a state are kept, and nothing is skipped.
+  - `Jev.evaluate(dataset)` gives accuracy, ECE, Brier, log-loss and the reliability bins per
+    kind of question and per question name, expected-level MAE, positive rate, optional 95 %
+    bootstrap intervals (whole groups are resampled), and factual notes (overconfidence, small
+    samples, no declared calibration, records that were also used to calibrate). All or nothing.
+  - `Jev.calibrate(dataset)` fits one global temperature (absolute) and measures what it gains
+    with a temperature fitted on the other folds (folds are made of whole groups);
+    `Jev.with_temperature(...)` returns a **new** `Jev` that shares the model and says
+    `calibrated=True`; `split_dataset` splits by group, deterministically.
+  - `compare({label: jev}, dataset)` evaluates several models on the same data and fails, naming
+    the model, if one cannot answer a record. No ranking.
+  - Reports have `table()` (fixed columns, three decimals) and `to_dict()`.
+- **Calibration tools** (`archai_jev.calibration`, plus `fit_temperature`, `TemperatureFit` and
+  `CalibrationError` in `archai_jev`):
+  - `fit_temperature(logits, labels, *, bounds=(0.01, 100.0))` finds the temperature that
+    minimises the log-loss as the zero of a monotone derivative (the loss is convex in `1/T`),
+    not a grid. When the best temperature is not inside `bounds` (every row uniform, labels that
+    always match the top option, logits without information about the labels) it raises
+    `CalibrationError` and returns nothing: a temperature at the edge would look calibrated
+    without any basis.
+  - `calibration_report`, `expected_calibration_error`, `brier_score`, `log_loss`,
+    `log_loss_from_logits` and `reliability_curve`, with fixed definitions (top-label ECE, 10
+    bins closed on the right; multi-class Brier in `[0, 2]`; natural log-loss without clipping,
+    `inf` for a zero probability on the label).
+  - The formulas of the answers as public functions, and batch versions: `calibrated_softmax_batch`,
+    `yes_no_probability`, `choice_confidence`, `score_value`, `score_confidence`. They give the
+    same bits as `ask` for the same probabilities. Unlike Kev, a row that does not sum to 1 (in
+    particular a sum of 0) is an error, not "uniform" (`sum_tolerance`, at most 0.05, for
+    rounded data).
+  - Rows may have different lengths; lists, tuples and numpy arrays are accepted.
+  `calibrated_softmax` is unchanged.
 - **Kev-0.8B** (`jaredpalmer/kev-0.8b`) is a model of the registry (variants `bf16`, the default,
   and `f32`). It is published as a base model plus a LoRA adapter, so the library downloads the
   original files, checks them by SHA-256, converts them into a GGUF with a converter written in

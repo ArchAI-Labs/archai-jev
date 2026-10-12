@@ -1,6 +1,29 @@
 //! Turning raw option scores into calibrated probabilities.
 
+pub mod batch;
+pub mod fit;
+pub mod formulas;
+pub mod problem;
+pub mod rows;
+
+#[cfg(test)]
+mod batch_tests;
+#[cfg(test)]
+mod fit_tests;
+
 use crate::error::{Error, Result};
+
+/// The one rule for a temperature: a finite number greater than 0.
+///
+/// # Errors
+/// `Error::InvalidTemperature` otherwise.
+pub fn check_temperature(temperature: f64) -> Result<()> {
+    if temperature.is_finite() && temperature > 0.0 {
+        Ok(())
+    } else {
+        Err(Error::InvalidTemperature(temperature))
+    }
+}
 
 /// Convert raw option scores (logits) into probabilities with a temperature-scaled softmax.
 ///
@@ -16,22 +39,29 @@ pub fn calibrated_softmax(logits: &[f64], temperature: f64) -> Result<Vec<f64>> 
     if logits.iter().any(|x| !x.is_finite()) {
         return Err(Error::NonFinite { name: "logits" });
     }
-    if !temperature.is_finite() || temperature <= 0.0 {
-        return Err(Error::InvalidTemperature(temperature));
-    }
+    check_temperature(temperature)?;
 
+    Ok(softmax_of_valid(logits, temperature))
+}
+
+/// The softmax of logits already known to be finite, with a valid temperature.
+pub(crate) fn softmax_of_valid(logits: &[f64], temperature: f64) -> Vec<f64> {
+    let mut out = Vec::with_capacity(logits.len());
+    softmax_into(logits, temperature, &mut out);
+    out
+}
+
+/// [`softmax_of_valid`] into `out` (cleared first), so a loop over many rows allocates once.
+pub(crate) fn softmax_into(logits: &[f64], temperature: f64, out: &mut Vec<f64>) {
     // Subtracting the max keeps exp() from overflowing without changing the result.
     let max = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let mut probs: Vec<f64> = logits
-        .iter()
-        .map(|x| ((x - max) / temperature).exp())
-        .collect();
+    out.clear();
+    out.extend(logits.iter().map(|x| ((x - max) / temperature).exp()));
     // The max element contributes exp(0) = 1, so the sum is always >= 1.
-    let sum: f64 = probs.iter().sum();
-    for p in &mut probs {
+    let sum: f64 = out.iter().sum();
+    for p in out.iter_mut() {
         *p /= sum;
     }
-    Ok(probs)
 }
 
 #[cfg(test)]
