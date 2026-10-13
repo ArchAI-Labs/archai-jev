@@ -737,3 +737,39 @@ fn a_calibrated_sibling_does_not_calibrate_the_variant_that_is_loaded() {
     );
     assert_eq!(model.scorer.calibration().temperature(), 1.7);
 }
+
+#[test]
+fn a_loaded_model_reports_every_variant_of_its_manifest() {
+    // spec 009 AC-3: `variants` lists what the manifest offers, not only what was loaded, and
+    // the declared calibration belongs to the variant that declares it
+    let fixture = with_declared_sibling(Builder::tiny()).build();
+    let h = Harness::new();
+    let model = h.load(&h.local(fixture.path())).unwrap();
+    let size = std::fs::metadata(fixture.gguf_path()).unwrap().len();
+    let got: Vec<_> = model
+        .data
+        .variants
+        .iter()
+        .map(|v| {
+            (
+                v.dtype.as_str(),
+                v.size_bytes,
+                v.calibrated,
+                v.temperature,
+                v.is_default,
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("q8_0", Some(size), false, None, true),
+            ("bf16", Some(size), true, Some(2.09), false),
+        ]
+    );
+    // what was loaded is the first one, uncalibrated, whatever the second declares
+    assert_eq!(
+        (model.data.dtype.as_str(), model.data.calibrated),
+        ("q8_0", false)
+    );
+}

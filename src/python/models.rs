@@ -24,6 +24,7 @@ use crate::models::load::{self, Context, LoadRequest, ModelData};
 use crate::models::manifest::{HeadSpec, Manifest};
 use crate::models::registry::Registry;
 use crate::models::resolve::{NameOrPath, Selection};
+use crate::models::variants::{VariantData, variants_of};
 
 struct ProcessEnv;
 
@@ -109,6 +110,25 @@ fn truthy(name: &str) -> bool {
     env(name).is_some_and(|v| !matches!(v.as_str(), "0" | "false" | "no"))
 }
 
+/// The variants of a manifest as plain dictionaries (`VariantInfo` is built in Python).
+fn variants_dicts<'py>(
+    py: Python<'py>,
+    variants: &[VariantData],
+) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    variants
+        .iter()
+        .map(|v| {
+            let out = PyDict::new(py);
+            out.set_item("dtype", &v.dtype)?;
+            out.set_item("size_bytes", v.size_bytes)?;
+            out.set_item("calibrated", v.calibrated)?;
+            out.set_item("temperature", v.temperature)?;
+            out.set_item("is_default", v.is_default)?;
+            Ok(out)
+        })
+        .collect()
+}
+
 fn info_dict<'py>(py: Python<'py>, d: &ModelData) -> PyResult<Bound<'py, PyDict>> {
     let out = PyDict::new(py);
     out.set_item("name", &d.name)?;
@@ -125,6 +145,7 @@ fn info_dict<'py>(py: Python<'py>, d: &ModelData) -> PyResult<Bound<'py, PyDict>
     out.set_item("calibration_source", d.calibration_source)?;
     out.set_item("tasks", d.tasks.clone())?;
     out.set_item("notice", d.notice.as_deref())?;
+    out.set_item("variants", variants_dicts(py, &d.variants)?)?;
     Ok(out)
 }
 
@@ -269,6 +290,7 @@ fn listed<'py>(py: Python<'py>, registry: &Registry, m: &Manifest) -> PyResult<B
     )?;
     out.set_item("notice", m.notice.as_deref())?;
     out.set_item("is_default", registry.is_default(m))?;
+    out.set_item("variants", variants_dicts(py, &variants_of(m))?)?;
     Ok(out)
 }
 

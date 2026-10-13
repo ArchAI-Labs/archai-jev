@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **See which weights a model offers**: `ModelInfo.variants` (a tuple of the new `VariantInfo`:
+  `dtype`, `size_bytes`, `calibrated`, `temperature`, `is_default`), from `list_models()` and from
+  a loaded model, with no network. Each variant carries **its own** calibration: a quantized
+  variant never inherits the temperature of another. When a variant has no declared calibration
+  the error now says so and points to `Jev.calibrate()`; if another variant of the same model
+  declares one, it says that temperature does not transfer. An unknown `dtype` lists the
+  supported names (`"int8"` is pointed to `"q8_0"`), and a weights file whose tensor types do not
+  fit its declared `dtype` is refused with the tensor, the expected type and the type found.
 - **Measure and calibrate a model on your own data** (`archai_jev.evaluation`, plus
   `InvalidDatasetError`), all in Rust and with no new dependency:
   - `load_dataset(path)` reads the JSONL format of Kev (the TypeSafe request plus a `label` per

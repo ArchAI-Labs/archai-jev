@@ -21,6 +21,7 @@ pub mod resolve;
 pub mod tokenizer_check;
 pub mod tolerance;
 pub mod validate;
+pub mod variants;
 pub mod vectors;
 pub mod verify;
 

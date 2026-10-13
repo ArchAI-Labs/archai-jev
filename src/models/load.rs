@@ -20,6 +20,7 @@ use super::resolve::{Selection, Target, resolve};
 use super::tokenizer_check;
 use super::tolerance;
 use super::validate;
+use super::variants::{VariantData, variants_of};
 use super::verify::run_selfcheck;
 use crate::error::{Error, Result};
 use crate::hub::blobs::BlobStore;
@@ -91,6 +92,8 @@ pub struct ModelData {
     pub notice: Option<String>,
     /// `registry` or `local`.
     pub source: &'static str,
+    /// Every variant the manifest offers (not only the one loaded).
+    pub variants: Vec<VariantData>,
 }
 
 /// A model ready to answer.
@@ -541,6 +544,7 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
             .as_ref()
             .map(|t| t.iter().map(|x| x.id.clone()).collect()),
         notice: manifest.notice.clone(),
+        variants: variants_of(&manifest),
         source: match target {
             Target::Registry(_) => "registry",
             Target::Local { .. } => "local",

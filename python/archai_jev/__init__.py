@@ -21,7 +21,7 @@ from ._exceptions import (
     NumericalError,
     UnsupportedRequestError,
 )
-from ._jev import CacheInfo, Jev, ModelInfo, list_models
+from ._jev import CacheInfo, Jev, ModelInfo, VariantInfo, list_models
 from ._questions import Choice, Noul, Score, YesNo
 
 JSONValue = str | int | float | bool | None | Mapping[str, Any] | Sequence[Any]
@@ -54,6 +54,7 @@ __all__ = [
     "State",
     "TemperatureFit",
     "UnsupportedRequestError",
+    "VariantInfo",
     "YesNo",
     "YesNoAnswer",
     "calibrated_softmax",

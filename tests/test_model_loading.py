@@ -10,6 +10,7 @@ import inspect
 import json
 import math
 import os
+import pickle
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from archai_jev import (
     ModelDownloadError,
     ModelInfo,
     UnsupportedRequestError,
+    VariantInfo,
     YesNo,
     list_models,
 )
@@ -65,6 +67,44 @@ def test_list_models_is_static_and_marks_the_default() -> None:
     assert d.notice and "demo" in d.notice.lower()
     assert d.license == "Apache-2.0" and d.max_context == 512
     assert list_models() == models  # deterministic
+
+
+def test_list_models_reports_the_variants_of_each_model() -> None:
+    by_name = {m.name: m for m in list_models()}
+    default = by_name["nickprock/archai-jev-qwen-1.5b"]
+    assert default.variants == (
+        VariantInfo(
+            dtype="q8_0",
+            size_bytes=1_646_572_736,
+            calibrated=True,
+            temperature=2.09,
+            is_default=True,
+        ),
+    )
+    kev = by_name["jaredpalmer/kev-0.8b"]
+    assert kev.variants is not None
+    assert [v.dtype for v in kev.variants] == ["bf16", "f32"]
+    # converted at first use: the size of the result is not known before that
+    assert all(v.size_bytes is None and v.calibrated for v in kev.variants)
+    assert [v.is_default for v in kev.variants] == [True, False]
+
+
+def test_variant_info_is_immutable_hashable_and_picklable() -> None:
+    (variant,) = list_models()[0].variants or ()
+    with pytest.raises(AttributeError):
+        variant.dtype = "q4_k_m"  # type: ignore[misc]
+    assert hash(variant) == hash(pickle.loads(pickle.dumps(variant)))
+    assert pickle.loads(pickle.dumps(variant)) == variant
+    info = list_models()[0]
+    assert pickle.loads(pickle.dumps(info)) == info
+    assert hash(info) == hash(pickle.loads(pickle.dumps(info)))
+    assert "VariantInfo" in archai_jev.__all__
+
+
+def test_the_test_scorer_has_no_variants() -> None:
+    from archai_jev.testing import MockScorer
+
+    assert Jev.from_scorer(MockScorer()).model_info.variants is None
 
 
 @pytest.mark.parametrize(

@@ -25,7 +25,7 @@ from ._reports import (
     study_from,
 )
 
-__all__ = ["CacheInfo", "Jev", "ModelInfo", "list_models"]
+__all__ = ["CacheInfo", "Jev", "ModelInfo", "VariantInfo", "list_models"]
 
 # Threads of the executor that runs ``aask`` / ``aask_many``. The model answers one request at a
 # time whatever this number is; the others wait here, where they can still be cancelled.
@@ -63,6 +63,30 @@ class CacheInfo:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
+class VariantInfo:
+    """One variant of a model's weights (one ``dtype``), as the model's manifest declares it.
+
+    A quantized variant is a model of its own (spec 009): it has its own calibration, and the
+    temperature declared for one variant is never applied to another.
+
+    Attributes:
+        dtype: Name to pass as ``dtype=`` to :meth:`Jev.from_pretrained` (``"q8_0"``, ...).
+        size_bytes: Size of the weights file, or ``None`` when the variant is produced by
+            converting the original files on first use (its size is not known before that).
+        calibrated: Whether the manifest declares a calibration for **this** variant. If not,
+            loading it needs ``temperature=`` or ``allow_uncalibrated=True``.
+        temperature: The declared temperature of this variant, or ``None``.
+        is_default: Whether this variant is the one used when no ``dtype`` is given.
+    """
+
+    dtype: str
+    size_bytes: int | None
+    calibrated: bool
+    temperature: float | None
+    is_default: bool
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
 class ModelInfo:
     """What is known about a loaded model. Immutable and hashable.
 
@@ -83,6 +107,8 @@ class ModelInfo:
         notice: A warning from the model's author that is shown on loading (the default model
             says it is a demo).
         is_default: Only for :func:`list_models`: whether this is the default model.
+        variants: Every variant of the weights the model offers (not only the one loaded), in
+            the manifest's order; ``None`` for the test scorer.
     """
 
     name: str
@@ -100,11 +126,21 @@ class ModelInfo:
     tasks: tuple[str, ...] | None = None
     notice: str | None = None
     is_default: bool | None = None
+    variants: tuple[VariantInfo, ...] | None = None
 
 
 def _info(raw: dict[str, Any]) -> ModelInfo:
     tasks = raw.get("tasks")
-    return ModelInfo(**{**raw, "tasks": None if tasks is None else tuple(tasks)})
+    variants = raw.get("variants")
+    return ModelInfo(
+        **{
+            **raw,
+            "tasks": None if tasks is None else tuple(tasks),
+            "variants": (
+                None if variants is None else tuple(VariantInfo(**v) for v in variants)
+            ),
+        }
+    )
 
 
 def list_models() -> tuple[ModelInfo, ...]:

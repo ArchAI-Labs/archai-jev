@@ -56,7 +56,7 @@ def test_public_surface_is_exactly_the_documented_one() -> None:
             "InferenceError", "InvalidDatasetError", "InvalidQuestionError", "InvalidStateError", "JSONValue", "Jev", "JevError",
             "ModelDownloadError", "ModelInfo", "ModelVerificationError", "Noul",
             "NumericalError", "Question", "Score", "ScoreAnswer", "State", "TemperatureFit",
-            "UnsupportedRequestError", "YesNo", "YesNoAnswer", "calibrated_softmax",
+            "UnsupportedRequestError", "VariantInfo", "YesNo", "YesNoAnswer", "calibrated_softmax",
             "fit_temperature", "list_models", "render_state",
         ]
     )  # fmt: skip
