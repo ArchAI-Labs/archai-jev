@@ -38,6 +38,10 @@ tempfile = "3"
 [features]
 # Fake backend, fake converter, tiny checkpoint builder and test server. Off in release wheels.
 testing = ["dep:tempfile"]
+# Study rows of spec 009: the K-quant dtypes (`q6_k`, `q5_k_m`, `q4_k_m`) are accepted with a
+# permissive recipe and a tolerance that refuses nothing, so that they can be MEASURED. Never in
+# release wheels: a dtype is a real name only after it passes the admission gate of the spec.
+quant-study = []
 
 [[test]]
 name = "golden_ids"

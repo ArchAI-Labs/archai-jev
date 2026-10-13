@@ -4,7 +4,6 @@
 //! tensors with which names, shapes and types are expected, which special-token roles the
 //! template needs, which question kinds the head can answer.
 
-use super::gguf::GgmlType;
 use super::incompat::Incompat;
 use crate::json_strict::Json;
 
@@ -386,16 +385,6 @@ pub fn keys() -> Vec<String> {
     all().map(|f| f.key.to_string()).collect()
 }
 
-/// The ggml type a weight matrix has for `dtype`.
-pub fn matrix_type(dtype: &str) -> Option<GgmlType> {
-    match dtype {
-        "f32" => Some(GgmlType::F32),
-        "bf16" => Some(GgmlType::BF16),
-        "q8_0" => Some(GgmlType::Q8_0),
-        _ => None,
-    }
-}
-
 impl Family {
     /// Read and check the architecture parameters of a manifest against this family.
     ///
@@ -479,11 +468,5 @@ mod tests {
         assert!(lookup("qwen2-letters").is_some());
         assert!(lookup("nope").is_none());
         assert!(keys().contains(&"qwen2-letters".to_string()));
-    }
-
-    #[test]
-    fn matrix_types() {
-        assert_eq!(matrix_type("q8_0"), Some(GgmlType::Q8_0));
-        assert_eq!(matrix_type("q4_k_m"), None);
     }
 }

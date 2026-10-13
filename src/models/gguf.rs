@@ -31,6 +31,14 @@ impl GgmlType {
     pub const Q8_0: GgmlType = GgmlType(8);
     /// bfloat16.
     pub const BF16: GgmlType = GgmlType(30);
+    /// 3-bit K-quant, super-blocks of 256.
+    pub const Q3_K: GgmlType = GgmlType(11);
+    /// 4-bit K-quant, super-blocks of 256.
+    pub const Q4_K: GgmlType = GgmlType(12);
+    /// 5-bit K-quant, super-blocks of 256.
+    pub const Q5_K: GgmlType = GgmlType(13);
+    /// 6-bit K-quant, super-blocks of 256.
+    pub const Q6_K: GgmlType = GgmlType(14);
 
     /// `(elements per block, bytes per block, name)` for the types we know the size of.
     fn layout(self) -> Option<(u64, u64, &'static str)> {

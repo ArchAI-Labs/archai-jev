@@ -370,9 +370,9 @@ fn reference_full_precision_is_the_same_as_leaving_it_out() {
 
 #[test]
 fn reject_dtype_without_tolerance() {
-    let i = rejects(Builder::tiny().dtype("q4_k_m"));
+    let i = rejects(Builder::tiny().dtype("q2_k"));
     assert!(
-        matches!(i, Incompat::NoTolerance { ref dtype, .. } if dtype == "q4_k_m"),
+        matches!(i, Incompat::NoTolerance { ref dtype, .. } if dtype == "q2_k"),
         "{i}"
     );
     has(&i, "tolerances are in the library");
@@ -746,6 +746,32 @@ fn reject_tensor_type() {
     // a vector that is not F32
     let i = rejects(Builder::tiny().set_tensor_type("output_norm.weight", 1));
     has(&i, "F32");
+}
+
+#[test]
+fn reject_a_k_quant_tensor_in_a_q8_0_file() {
+    // spec 009 AC-11: the file claims q8_0 but one matrix is Q4_K (type 12); the message names
+    // the tensor, what was expected and what was found
+    let i = rejects(Builder::tiny().set_tensor_type("blk.0.attn_q.weight", 12));
+    assert!(
+        matches!(i, Incompat::TensorType { ref name, .. } if name == "blk.0.attn_q.weight"),
+        "{i}"
+    );
+    has(&i, "expected Q8_0");
+    has(&i, "Q4_K");
+}
+
+#[test]
+fn reject_a_file_of_one_dtype_labelled_as_another() {
+    // every matrix is bfloat16 (type 30) but the manifest says q8_0
+    let i = rejects(Builder::tiny().edit_tensors(|tensors| {
+        for t in tensors.iter_mut().filter(|t| t.dims.len() == 2) {
+            t.ty = 30;
+        }
+    }));
+    assert!(matches!(i, Incompat::TensorType { .. }), "{i}");
+    has(&i, "Q8_0");
+    has(&i, "BF16");
 }
 
 // ---- stage 5: tokenizer --------------------------------------------------------------------

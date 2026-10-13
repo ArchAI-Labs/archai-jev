@@ -601,3 +601,31 @@ fn engine_vectors_fail_beyond_tol_p_and_full_precision_ones_do_not() {
     h.load(&h.local(fixture.path())).unwrap();
     assert_eq!(h.records(), 1);
 }
+
+#[test]
+fn a_variant_the_manifest_does_not_offer_lists_the_available_ones() {
+    // spec 009 AC-4: asking for a dtype the manifest has no variant for names what it has
+    let h = registry_harness(Builder::tiny());
+    let req = crate::models::load::LoadRequest {
+        selection: Selection {
+            dtype: Some("bf16".to_string()),
+            ..named("test/tiny")
+        },
+        temperature: None,
+        allow_uncalibrated: true,
+    };
+    let err = h.load(&req).err().unwrap();
+    let Error::IncompatibleModel(Incompat::DtypeNotOffered { dtype, available }) = &err else {
+        panic!("{err:?}")
+    };
+    assert_eq!(
+        (dtype.as_str(), available.as_slice()),
+        ("bf16", &["q8_0".to_string()][..])
+    );
+    let text = err.to_string();
+    assert!(
+        text.contains("'bf16'") && text.contains("available: q8_0"),
+        "{text}"
+    );
+    assert_eq!(h.backend.loads(), 0);
+}

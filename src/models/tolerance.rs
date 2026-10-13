@@ -76,6 +76,13 @@ pub fn lookup(family: &str, dtype: &str, reference: Reference) -> Option<Toleran
             logit: Some(1e-3),
             p: 1e-3,
         },
+        // study rows (spec 009): refuse nothing, so that a K-quant can be loaded and MEASURED;
+        // never in a release build
+        #[cfg(feature = "quant-study")]
+        ("qwen2-letters", "q6_k" | "q5_k_m" | "q4_k_m", FullPrecision) => Tolerance {
+            logit: None,
+            p: 1.0,
+        },
         // a tight row for the engine-recorded rule (spec 009 section 4), to test the mechanism
         #[cfg(feature = "testing")]
         ("test-fake", "f32", Engine) => Tolerance {
@@ -106,6 +113,12 @@ pub fn all() -> Vec<(&'static str, &'static str, Reference)> {
         ("test-kev", "q8_0", Reference::FullPrecision),
         ("test-fake", "f32", Reference::Engine),
     ]);
+    #[cfg(feature = "quant-study")]
+    rows.extend([
+        ("qwen2-letters", "q6_k", Reference::FullPrecision),
+        ("qwen2-letters", "q5_k_m", Reference::FullPrecision),
+        ("qwen2-letters", "q4_k_m", Reference::FullPrecision),
+    ]);
     rows
 }
 
@@ -131,7 +144,15 @@ mod tests {
                 p: 0.2
             })
         );
+        // a K-quant has a row only behind the study feature, and then one that refuses nothing
+        #[cfg(not(feature = "quant-study"))]
         assert_eq!(lookup("qwen2-letters", "q4_k_m", FP), None);
+        #[cfg(feature = "quant-study")]
+        assert_eq!(
+            lookup("qwen2-letters", "q4_k_m", FP).map(|t| t.p),
+            Some(1.0)
+        );
+        assert_eq!(lookup("qwen2-letters", "q2_k", FP), None);
         assert_eq!(lookup("nope", "f32", FP), None);
     }
 
@@ -173,5 +194,33 @@ mod tests {
         assert_eq!(Reference::parse("Engine"), None);
         assert_eq!(Reference::parse(""), None);
         assert_eq!(Reference::default(), Reference::FullPrecision);
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+    use crate::models::recipes;
+
+    #[test]
+    fn every_name_has_a_row_and_every_real_row_has_a_name() {
+        // spec 009 AC-1: the dtypes a release accepts and the dtypes it can verify are the
+        // same set (for the real families; the test families are not names users can pick)
+        for family in ["qwen2-letters"] {
+            for d in recipes::DTYPES {
+                assert!(
+                    lookup(family, d, Reference::FullPrecision).is_some(),
+                    "{family} {d} has a name but no tolerance"
+                );
+            }
+        }
+        for (f, d, _) in all() {
+            if f == "qwen2-letters" || f == "qwen35-pointer" {
+                assert!(
+                    recipes::DTYPES.contains(&d),
+                    "{f} {d} has a row but no name"
+                );
+            }
+        }
     }
 }

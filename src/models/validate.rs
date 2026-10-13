@@ -1,10 +1,11 @@
 //! Fail-closed validation (D20, level 1): what the manifest declares (stage 2) and whether a
 //! GGUF file matches it (stage 4). Each failure is one [`Incompat`] reason.
 
-use super::families::{self, ArchParams, Family, MetaExpect, Role};
-use super::gguf::{GgmlType, GgufInfo, MetaValue};
+use super::families::{self, ArchParams, Family, MetaExpect};
+use super::gguf::{GgufInfo, MetaValue};
 use super::incompat::Incompat;
 use super::manifest::{CalibrationDecl, HeadSpec, Manifest, Source, Variant};
+use super::recipes;
 use super::tolerance;
 use super::vectors::check_vectors;
 
@@ -273,7 +274,6 @@ pub fn gguf_vs_manifest(
         });
     }
 
-    let matrix = families::matrix_type(dtype);
     let expected = (family.tensors)(&resolved.params);
     for spec in &expected {
         let Some(t) = info.tensor(&spec.name) else {
@@ -288,14 +288,11 @@ pub fn gguf_vs_manifest(
                 got: t.dims.clone(),
             });
         }
-        let want = match spec.role {
-            Role::Vector => Some(GgmlType::F32),
-            Role::Matrix => matrix,
-        };
-        if want != Some(t.ty) {
+        let allowed = recipes::allowed_types(dtype, spec.role);
+        if !allowed.is_some_and(|types| types.contains(&t.ty)) {
             return Err(Incompat::TensorType {
                 name: spec.name.clone(),
-                expected: want.map_or_else(|| "a supported type".to_string(), GgmlType::name),
+                expected: recipes::describe(allowed),
                 got: t.ty.name(),
             });
         }

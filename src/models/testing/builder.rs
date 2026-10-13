@@ -10,6 +10,7 @@ use super::jsonedit::{arr, b, f, n, obj, s, set};
 use crate::json_strict::Json;
 use crate::models::families::{self, ArchParams, ParamValue, Role};
 use crate::models::hash::sha256_hex;
+use crate::models::recipes;
 
 /// Name of the manifest file in a local model folder.
 pub const MANIFEST_FILE: &str = "archai-jev-manifest.json";
@@ -254,7 +255,7 @@ impl Builder {
     fn gguf_bytes(&self) -> Vec<u8> {
         let family = families::lookup(&self.family).expect("family");
         let params = self.params();
-        let matrix_ty = families::matrix_type(&self.dtype).map_or(0, |t| t.0);
+        let matrix_ty = recipes::default_matrix_type(&self.dtype).map_or(0, |t| t.0);
         let mut tensors: Vec<TensorDesc> = (family.tensors)(&params)
             .into_iter()
             .map(|t| TensorDesc {

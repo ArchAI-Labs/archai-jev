@@ -97,6 +97,25 @@ def test_only_cpu_is_supported(device: str) -> None:
         Jev.from_pretrained(device=device)
 
 
+@pytest.mark.parametrize("dtype", ["int8", "q4", "fp16", "Q8_0", ""])
+def test_unknown_dtype_names_are_value_errors_that_list_the_supported_ones(
+    dtype: str,
+) -> None:
+    with pytest.raises(ValueError, match="not a known dtype") as caught:
+        Jev.from_pretrained(dtype=dtype, offline=True)
+    message = str(caught.value)
+    for name in ("f32", "bf16", "q8_0"):
+        assert name in message
+
+
+def test_int8_is_pointed_to_q8_0() -> None:
+    with pytest.raises(ValueError, match=r"'q8_0' is the 8-bit integer"):
+        Jev.from_pretrained(dtype="int8", offline=True)
+    with pytest.raises(ValueError) as caught:
+        Jev.from_pretrained(dtype="q4", offline=True)
+    assert "8-bit integer" not in str(caught.value)
+
+
 @pytest.mark.parametrize("temperature", [0, -1.0, float("nan"), float("inf")])
 def test_bad_temperatures_are_value_errors(temperature: float) -> None:
     with pytest.raises(ValueError):
