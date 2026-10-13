@@ -112,6 +112,9 @@ pub enum Incompat {
     Uncalibrated {
         name: String,
         dtype: String,
+        /// Another variant of the same manifest that does declare a calibration: its dtype
+        /// and temperature. Named in the message so nobody copies it over.
+        other_declared: Option<(String, f64)>,
     },
     // ---- stage 3: files ----
     FileMissing {
@@ -351,10 +354,23 @@ impl fmt::Display for Incompat {
                 "head.d_model is {d_model} but architecture.n_embd is {n_embd}; the head reads the backbone's hidden state, so they must be equal"
             ),
             I::BadTasks { index, detail } => write!(f, "tasks[{index}] is not valid: {detail}"),
-            I::Uncalibrated { name, dtype } => write!(
-                f,
-                "model '{name}' ({dtype}) has no declared calibration: pass temperature=<value> (see archai_jev.fit_temperature) or allow_uncalibrated=True to accept uncalibrated probabilities (answers will carry calibrated=False)"
-            ),
+            I::Uncalibrated {
+                name,
+                dtype,
+                other_declared,
+            } => {
+                write!(
+                    f,
+                    "model '{name}' ({dtype}) has no declared calibration: pass temperature=<value> (fit one on your data with Jev.calibrate() or archai_jev.fit_temperature) or allow_uncalibrated=True to accept uncalibrated probabilities (answers will carry calibrated=False)"
+                )?;
+                if let Some((other, t)) = other_declared {
+                    write!(
+                        f,
+                        "; the temperature {t} declared for '{other}' does not transfer to '{dtype}': a different quantisation is a different model with its own calibration"
+                    )?;
+                }
+                Ok(())
+            }
             I::FileMissing { path } => write!(f, "file '{path}' does not exist"),
             I::SizeMismatch {
                 path,

@@ -289,6 +289,7 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
     let decision = calibration_gate::decide(
         &manifest.name,
         variant,
+        &manifest.variants,
         req.temperature,
         req.allow_uncalibrated,
     )?;

@@ -629,3 +629,111 @@ fn a_variant_the_manifest_does_not_offer_lists_the_available_ones() {
     );
     assert_eq!(h.backend.loads(), 0);
 }
+
+/// A second variant (`bf16`) that declares a calibration, sharing the file entry of the first
+/// (it is never opened by these tests): a manifest with a calibrated sibling.
+fn with_declared_sibling(builder: Builder) -> Builder {
+    use crate::json_strict::Json;
+    use crate::models::testing::jsonedit::{b, f, set};
+    builder.edit_manifest(|j| {
+        let Json::Object(top) = j else {
+            panic!("manifest")
+        };
+        let (_, variants) = top.iter_mut().find(|(k, _)| k == "variants").unwrap();
+        let Json::Array(items) = variants else {
+            panic!("variants")
+        };
+        let mut second = items[0].clone();
+        set(&mut second, "dtype", s("bf16"));
+        set(
+            &mut second,
+            "calibration",
+            obj(vec![
+                ("declared", b(true)),
+                ("temperature", f(2.09)),
+                ("evidence", s("measured on another set, for bf16 only")),
+            ]),
+        );
+        items.push(second);
+    })
+}
+
+#[test]
+fn an_uncalibrated_variant_names_its_calibrated_sibling_and_touches_nothing() {
+    // spec 009 AC-5: refused at stage 2, before the network and before any weights are read
+    // (the GGUF is deleted after the manifest is sealed: the refusal must not need it)
+    let fixture = with_declared_sibling(Builder::tiny())
+        .after_seal(|dir| std::fs::remove_file(dir.join("model.gguf")).unwrap())
+        .build();
+    let h = Harness::new();
+    let mut req = h.local(fixture.path());
+    req.allow_uncalibrated = false;
+    let err = h.load(&req).err().unwrap();
+    let Error::IncompatibleModel(Incompat::Uncalibrated {
+        dtype,
+        other_declared,
+        ..
+    }) = &err
+    else {
+        panic!("{err:?}")
+    };
+    assert_eq!(dtype, "q8_0");
+    assert_eq!(other_declared, &Some(("bf16".to_string(), 2.09)));
+    let text = err.to_string();
+    for part in ["(q8_0)", "Jev.calibrate()", "'bf16'", "does not transfer"] {
+        assert!(text.contains(part), "{part:?} missing from {text}");
+    }
+    assert_eq!(h.backend.loads(), 0);
+    assert_eq!(h.records(), 0);
+    assert_eq!(
+        h.transport.gets.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    // the same fixture without a calibrated sibling gets the plain message
+    let alone = Builder::tiny().build();
+    let mut req = h.local(alone.path());
+    req.allow_uncalibrated = false;
+    let text = h.load(&req).err().unwrap().to_string();
+    assert!(
+        text.contains("Jev.calibrate()") && !text.contains("does not transfer"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_calibrated_sibling_does_not_calibrate_the_variant_that_is_loaded() {
+    // spec 009 AC-6: with consent the variant runs at T = 1.0 and says so on every answer,
+    // although the bf16 variant of the same manifest declares 2.09
+    let fixture = with_declared_sibling(Builder::tiny()).build();
+    let h = Harness::new();
+    let model = h.load(&h.local(fixture.path())).unwrap();
+    assert_eq!(
+        (
+            model.data.dtype.as_str(),
+            model.data.temperature,
+            model.data.calibrated,
+            model.data.calibration_source
+        ),
+        ("q8_0", 1.0, false, "none")
+    );
+    assert_eq!(
+        (
+            model.scorer.calibration().temperature(),
+            model.scorer.calibration().calibrated()
+        ),
+        (1.0, false)
+    );
+    // and with a temperature of the user's: absolute, calibrated, source "user"
+    let mut req = h.local(fixture.path());
+    req.temperature = Some(1.7);
+    let model = h.load(&req).unwrap();
+    assert_eq!(
+        (
+            model.data.temperature,
+            model.data.calibrated,
+            model.data.calibration_source
+        ),
+        (1.7, true, "user")
+    );
+    assert_eq!(model.scorer.calibration().temperature(), 1.7);
+}
