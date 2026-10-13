@@ -56,6 +56,10 @@ name = "default_model"
 required-features = ["testing"]
 
 [[test]]
+name = "quantization_dataset_ids"
+required-features = ["testing"]
+
+[[test]]
 name = "default_calibration"
 required-features = ["testing"]
 
