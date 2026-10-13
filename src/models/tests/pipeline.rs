@@ -632,7 +632,7 @@ fn a_variant_the_manifest_does_not_offer_lists_the_available_ones() {
 
 /// A second variant (`bf16`) that declares a calibration, sharing the file entry of the first
 /// (it is never opened by these tests): a manifest with a calibrated sibling.
-fn with_declared_sibling(builder: Builder) -> Builder {
+pub(super) fn with_declared_sibling(builder: Builder) -> Builder {
     use crate::json_strict::Json;
     use crate::models::testing::jsonedit::{b, f, set};
     builder.edit_manifest(|j| {

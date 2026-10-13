@@ -177,7 +177,7 @@
    "calibration": {
     "declared": true,
     "temperature": 2.09,
-    "evidence": "Global temperature fitted on the validation split of the training data (n=1447, restricted softmax over the first K answer letters of each question, K = number of options); on the disjoint test split (n=1449) ECE 0.058 -> 0.013 and Brier 0.136 -> 0.121. In-distribution only: valid for the four declared tasks."
+    "evidence": "Variant q8_0 (the published Q8_0 GGUF). Global temperature fitted on the validation split of the training data (n=1447, restricted softmax over the first K answer letters of each question, K = number of options); on the disjoint test split (n=1449) ECE 0.058 -> 0.013 and Brier 0.136 -> 0.121. In-distribution only: valid for the four declared tasks."
    },
    "selfcheck": {
     "vectors": [

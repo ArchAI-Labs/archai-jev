@@ -6,6 +6,7 @@ files in a cache folder (``ARCHAI_JEV_TEST_CACHE``) and is skipped otherwise.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import json
 import math
@@ -52,6 +53,54 @@ def test_signature_is_the_documented_one() -> None:
         assert p.kind is inspect.Parameter.KEYWORD_ONLY, name
     for forbidden in ("strict", "check", "verify", "validate", "skip", "trust"):
         assert not any(forbidden in n for n in sig.parameters)
+
+
+def test_no_silent_variant_choice_in_the_signature() -> None:
+    """The variant is picked by ``dtype=`` and by nothing else (spec 009): no switch for a
+    "lighter", "faster" or "automatic" model."""
+    sig = inspect.signature(Jev.from_pretrained)
+    for forbidden in (
+        "quant",
+        "low_mem",
+        "fast",
+        "precision",
+        "auto",
+        "light",
+        "small",
+    ):
+        assert not any(forbidden in n for n in sig.parameters), forbidden
+    assert sig.parameters["dtype"].default is None
+    # the compiled function behind it has the same parameters (the stub is its description)
+    stub = ast.parse(
+        (Path(archai_jev.__file__).parent / "_core.pyi").read_text(encoding="utf-8")
+    )
+    (load,) = [
+        n
+        for n in ast.walk(stub)
+        if isinstance(n, ast.FunctionDef) and n.name == "load_model"
+    ]
+    names = [a.arg for a in load.args.args + load.args.kwonlyargs]
+    for forbidden in ("quant", "low_mem", "fast", "precision", "auto"):
+        assert not any(forbidden in n for n in names), forbidden
+
+
+def test_the_environment_cannot_pick_a_variant(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Environment variables that look like variant switches change nothing: with an empty
+    cache and no network, the file asked for is the one of the default variant (q8_0).
+    """
+    for name in (
+        "ARCHAI_JEV_DTYPE",
+        "ARCHAI_JEV_QUANTIZE",
+        "ARCHAI_JEV_VARIANT",
+        "ARCHAI_JEV_PRECISION",
+        "HF_DTYPE",
+    ):
+        monkeypatch.setenv(name, "q4_k_m")
+    with pytest.raises(ModelDownloadError) as caught:
+        Jev.from_pretrained(offline=True, cache_dir=tmp_path)
+    assert "q8.gguf" in str(caught.value)
 
 
 def test_list_models_is_static_and_marks_the_default() -> None:

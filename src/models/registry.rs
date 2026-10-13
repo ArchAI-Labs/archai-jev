@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use super::files::FileEntry;
 use super::incompat::Incompat;
 use super::manifest::{HeadSpec, Manifest, ManifestOrigin, Source};
+use super::recipes;
 use super::validate;
 use crate::json_strict::{self, Json, Obj};
 
@@ -204,6 +205,15 @@ impl Registry {
                     return Err(format!("{tag}: file {} has no origin", file.path));
                 }
             }
+            for v in &m.variants {
+                if v.calibration.declared && recipes::is_quantized(&v.dtype) {
+                    check_quantized_evidence(
+                        &tag,
+                        &v.dtype,
+                        v.calibration.evidence.as_deref().unwrap_or(""),
+                    )?;
+                }
+            }
             if !PERMISSIVE.contains(&m.license.spdx.as_str())
                 && m.license.restrictions.as_deref().is_none_or(str::is_empty)
             {
@@ -223,6 +233,15 @@ impl Registry {
                     .any(|m| &m.name == n && &m.revision == r)
                 {
                     return Err(format!("the default {n}@{r} is not an entry"));
+                }
+                // what `Jev.from_pretrained()` loads must run without any consent (spec 009)
+                let default_variant = self
+                    .default_entry()
+                    .and_then(|m| m.variant(&m.default_dtype));
+                if !default_variant.is_some_and(|v| v.calibration.declared) {
+                    return Err(format!(
+                        "the default variant of the default entry {n}@{r} must declare a calibration"
+                    ));
                 }
             }
         }
@@ -245,6 +264,27 @@ impl Registry {
         }
         Ok(())
     }
+}
+
+/// A quantised variant is its own model (D22): its declared calibration must say which variant
+/// it was measured on, with which sample sizes (fit and test) and what the ECE did.
+fn check_quantized_evidence(tag: &str, dtype: &str, evidence: &str) -> Result<(), String> {
+    if !evidence.contains(dtype) {
+        return Err(format!(
+            "{tag}: the evidence of the quantised variant {dtype} must name its dtype"
+        ));
+    }
+    if evidence.matches("n=").count() < 2 {
+        return Err(format!(
+            "{tag}: the evidence of {dtype} must give two sample sizes (n=...), for the fit and for the test"
+        ));
+    }
+    if !evidence.contains("ECE") || !evidence.contains("->") {
+        return Err(format!(
+            "{tag}: the evidence of {dtype} must give the ECE before and after (ECE a -> b)"
+        ));
+    }
+    Ok(())
 }
 
 /// Every file entry of a manifest (tokenizer, head weights, variant sources).
@@ -464,5 +504,93 @@ mod tests {
             Registry::builtin().unwrap().default_entry().is_none()
                 || !Registry::builtin().unwrap().entries().is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod quantized_lint_tests {
+    use super::*;
+    use crate::models::manifest::{CalibrationDecl, Variant};
+
+    /// The built-in registry with the default variant of the default entry changed by `f`.
+    fn with_default_variant(f: impl FnOnce(&mut Variant)) -> Registry {
+        let mut reg = Registry::builtin().unwrap().clone();
+        let (name, revision) = reg.default.clone().unwrap();
+        let m = reg
+            .entries
+            .iter_mut()
+            .find(|m| m.name == name && m.revision == revision)
+            .unwrap();
+        let dtype = m.default_dtype.clone();
+        f(m.variants.iter_mut().find(|v| v.dtype == dtype).unwrap());
+        reg
+    }
+
+    fn lint_after_changing_evidence(replace: impl Fn(&str) -> String) -> Result<(), String> {
+        with_default_variant(|v| {
+            let old = v.calibration.evidence.clone().unwrap();
+            v.calibration.evidence = Some(replace(&old));
+        })
+        .lint()
+    }
+
+    #[test]
+    fn the_default_dtype_is_pinned_to_q8_0() {
+        // spec 009 AC-7: the default of `from_pretrained()` is the measured Q8_0. Changing it is
+        // a decision (a new D, with its own measure), and this test is where it is written down.
+        let reg = Registry::builtin().unwrap();
+        let m = reg.default_entry().unwrap();
+        assert_eq!(m.default_dtype, "q8_0");
+        let v = m.variant("q8_0").unwrap();
+        assert!(v.calibration.declared);
+        assert_eq!(v.calibration.temperature, Some(2.09));
+    }
+
+    #[test]
+    fn quantized_evidence_names_dtype_and_ns() {
+        // the real evidence passes ...
+        Registry::builtin().unwrap().lint().unwrap();
+        // ... and each missing piece is refused, naming what is missing
+        let err = lint_after_changing_evidence(|e| e.replace("q8_0", "the variant")).unwrap_err();
+        assert!(err.contains("must name its dtype"), "{err}");
+        let err = lint_after_changing_evidence(|e| e.replace("n=1449", "1449 rows")).unwrap_err();
+        assert!(err.contains("two sample sizes"), "{err}");
+        let err = lint_after_changing_evidence(|e| e.replace("n=1447", "1447 rows")).unwrap_err();
+        assert!(err.contains("two sample sizes"), "{err}");
+        let err =
+            lint_after_changing_evidence(|e| e.replace("ECE", "calibration error")).unwrap_err();
+        assert!(err.contains("ECE before and after"), "{err}");
+        let err = lint_after_changing_evidence(|e| e.replace("->", "became")).unwrap_err();
+        assert!(err.contains("ECE before and after"), "{err}");
+    }
+
+    #[test]
+    fn full_precision_variants_are_not_held_to_the_quantized_rule() {
+        // Kev's f32 and bf16 evidence gives no sample sizes and no ECE, and the registry is fine
+        let reg = Registry::builtin().unwrap();
+        let kev = reg
+            .entries()
+            .iter()
+            .find(|m| m.name == "jaredpalmer/kev-0.8b")
+            .unwrap();
+        assert!(
+            kev.variants
+                .iter()
+                .all(|v| !recipes::is_quantized(&v.dtype))
+        );
+        reg.lint().unwrap();
+    }
+
+    #[test]
+    fn the_default_variant_of_the_default_entry_must_declare_a_calibration() {
+        let reg = with_default_variant(|v| {
+            v.calibration = CalibrationDecl {
+                declared: false,
+                temperature: None,
+                evidence: None,
+            };
+        });
+        let err = reg.lint().unwrap_err();
+        assert!(err.contains("must declare a calibration"), "{err}");
     }
 }

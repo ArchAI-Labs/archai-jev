@@ -23,6 +23,13 @@ pub const DTYPES: &[&str] = &[
     "q4_k_m",
 ];
 
+/// Whether a `dtype` stores its weights quantised (everything but full `f32` and `bf16`).
+///
+/// A quantised variant is a model of its own: its calibration has to be measured for it (D22).
+pub fn is_quantized(dtype: &str) -> bool {
+    !matches!(dtype, "f32" | "bf16")
+}
+
 /// The canonical name for `given` (`float32` and `bfloat16` are synonyms), if it is one.
 ///
 /// The match is exact: `"Q8_0"` is not `"q8_0"` (never guess).
@@ -122,6 +129,14 @@ mod tests {
             Some(&[GgmlType::F32][..])
         );
         assert_eq!(allowed_types("q2_k", Role::Matrix), None);
+    }
+
+    #[test]
+    fn only_full_precision_is_not_quantized() {
+        assert!(!is_quantized("f32") && !is_quantized("bf16"));
+        for d in ["q8_0", "q6_k", "q5_k_m", "q4_k_m", "anything"] {
+            assert!(is_quantized(d), "{d}");
+        }
     }
 
     #[test]
