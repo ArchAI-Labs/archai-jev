@@ -6,6 +6,7 @@
 
 use super::files::{FileEntry, is_commit, is_repo_id};
 use super::incompat::Incompat;
+use super::tolerance::Reference;
 use super::vectors::{Vector, parse_vectors};
 use crate::json_strict::{self, FieldProblem, Json, Obj};
 
@@ -203,6 +204,8 @@ pub struct Variant {
     pub calibration: CalibrationDecl,
     /// Self-check vectors.
     pub vectors: Vec<Vector>,
+    /// Where the expected numbers of the vectors come from (`selfcheck.reference`).
+    pub reference: Reference,
 }
 
 /// The `architecture` object: a name and free-form structural parameters whose allowed
@@ -531,6 +534,21 @@ fn parse_variants(o: &mut Obj<'_>, registry: bool) -> Result<Vec<Variant>, Incom
         let calibration = parse_calibration(v.req("calibration")?, &format!("{vp}.calibration"))?;
         let mut sc = v.obj("selfcheck")?;
         let vectors = parse_vectors(sc.arr("vectors")?, &format!("{vp}.selfcheck.vectors"))?;
+        let reference = match sc.opt("reference") {
+            None => Reference::default(),
+            Some(Json::Str(name)) => Reference::parse(name).ok_or_else(|| {
+                bad(
+                    &format!("{vp}.selfcheck.reference"),
+                    format!("must be \"full_precision\" or \"engine\", got {name:?}"),
+                )
+            })?,
+            Some(other) => {
+                return Err(bad(
+                    &format!("{vp}.selfcheck.reference"),
+                    format!("must be a string, got {}", other.kind()),
+                ));
+            }
+        };
         sc.finish()?;
         v.finish()?;
         out.push(Variant {
@@ -538,6 +556,7 @@ fn parse_variants(o: &mut Obj<'_>, registry: bool) -> Result<Vec<Variant>, Incom
             source,
             calibration,
             vectors,
+            reference,
         });
     }
     Ok(out)

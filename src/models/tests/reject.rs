@@ -338,6 +338,37 @@ fn reject_template_mismatch() {
 }
 
 #[test]
+fn reject_unknown_or_mistyped_selfcheck_reference() {
+    for value in [s("bogus"), s("Engine"), s(""), n(1), b(true), Json::Null] {
+        let i = rejects(Builder::tiny().set("variants.0.selfcheck.reference", value));
+        assert!(
+            matches!(i, Incompat::ManifestBadValue { ref path, .. } if path == "variants[0].selfcheck.reference"),
+            "{i}"
+        );
+    }
+}
+
+#[test]
+fn reject_reference_without_a_tolerance_row() {
+    // the row of the full-precision rule does not answer for the engine-recorded rule
+    let i = rejects(Builder::tiny().set("variants.0.selfcheck.reference", s("engine")));
+    assert!(
+        matches!(i, Incompat::NoTolerance { ref dtype, reference, .. } if dtype == "q8_0" && reference == "engine"),
+        "{i}"
+    );
+    has(&i, "reference 'engine'");
+}
+
+#[test]
+fn reference_full_precision_is_the_same_as_leaving_it_out() {
+    let h = Harness::new();
+    let explicit = Builder::tiny()
+        .set("variants.0.selfcheck.reference", s("full_precision"))
+        .build();
+    h.load(&h.local(explicit.path())).unwrap();
+}
+
+#[test]
 fn reject_dtype_without_tolerance() {
     let i = rejects(Builder::tiny().dtype("q4_k_m"));
     assert!(

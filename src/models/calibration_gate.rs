@@ -88,6 +88,7 @@ mod tests {
     use super::*;
     use crate::models::files::FileEntry;
     use crate::models::manifest::{CalibrationDecl, Source};
+    use crate::models::tolerance::Reference;
 
     fn variant(declared: Option<f64>) -> Variant {
         Variant {
@@ -106,6 +107,7 @@ mod tests {
                 evidence: declared.map(|_| "test".to_string()),
             },
             vectors: vec![],
+            reference: Reference::default(),
         }
     }
 

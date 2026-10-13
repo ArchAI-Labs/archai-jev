@@ -79,6 +79,7 @@ pub enum Incompat {
     NoTolerance {
         family: String,
         dtype: String,
+        reference: &'static str,
     },
     SourceWithoutConverter {
         kind: String,
@@ -315,9 +316,13 @@ impl fmt::Display for Incompat {
                 f,
                 "manifest template '{got}' does not match family '{family}', which needs '{expected}'"
             ),
-            I::NoTolerance { family, dtype } => write!(
+            I::NoTolerance {
+                family,
+                dtype,
+                reference,
+            } => write!(
                 f,
-                "no verification tolerance is defined for family '{family}' with dtype '{dtype}', so its numbers cannot be verified; the variant is refused (tolerances are in the library, not in manifests)"
+                "no verification tolerance is defined for family '{family}' with dtype '{dtype}' and reference '{reference}', so its numbers cannot be verified; the variant is refused (tolerances are in the library, not in manifests)"
             ),
             I::SourceWithoutConverter { kind } => write!(
                 f,

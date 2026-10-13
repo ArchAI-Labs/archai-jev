@@ -455,12 +455,14 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
 
     // Stage 8: self-check, once per (files, library, platform).
     if !vouched {
-        let tol = tolerance::lookup(resolved.family.key, &dtype).ok_or_else(|| {
-            incompat(Incompat::NoTolerance {
-                family: resolved.family.key.to_string(),
-                dtype: dtype.clone(),
-            })
-        })?;
+        let tol =
+            tolerance::lookup(resolved.family.key, &dtype, variant.reference).ok_or_else(|| {
+                incompat(Incompat::NoTolerance {
+                    family: resolved.family.key.to_string(),
+                    dtype: dtype.clone(),
+                    reference: variant.reference.name(),
+                })
+            })?;
         run_selfcheck(
             &manifest.name,
             variant,

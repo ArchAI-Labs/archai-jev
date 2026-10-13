@@ -174,7 +174,7 @@ fn the_ids_message_names_the_first_difference() {
 fn tolerance_boundaries_are_exact() {
     use crate::json_strict::Json;
     use crate::models::manifest::{CalibrationDecl, Source, Variant};
-    use crate::models::tolerance::Tolerance;
+    use crate::models::tolerance::{Reference, Tolerance};
     use crate::models::vectors::{Expected, Vector};
     use crate::models::verify::{RunOutput, VectorRunner, run_selfcheck};
 
@@ -198,6 +198,7 @@ fn tolerance_boundaries_are_exact() {
             temperature: None,
             evidence: None,
         },
+        reference: Reference::default(),
         vectors: vec![Vector {
             id: "v".into(),
             request: Json::Null,
@@ -558,4 +559,45 @@ fn license_and_notice_are_reported() {
         warnings.iter().any(|w| w.contains("Demo model")),
         "{warnings:?}"
     );
+}
+
+#[test]
+fn engine_vectors_fail_beyond_tol_p_and_full_precision_ones_do_not() {
+    // The engine is off by a logit shift of 5e-4 (a probability shift around 1e-4): inside the
+    // loose full-precision row of the family, outside the tight engine-recorded row. The same
+    // numbers are accepted or refused only because of `selfcheck.reference` (spec 009, AC-10).
+    for (reference, accepted) in [
+        (None, true),
+        (Some("full_precision"), true),
+        (Some("engine"), false),
+    ] {
+        let mut builder = Builder::tiny_fake();
+        if let Some(r) = reference {
+            builder = builder.set("variants.0.selfcheck.reference", s(r));
+        }
+        let fixture = builder.build();
+        let mut h = Harness::new();
+        h.backend = FakeBackend::new().perturbed(Perturb::LogitShift(5e-4));
+        let result = h.load(&h.local(fixture.path()));
+        match (accepted, result) {
+            (true, Ok(_)) => assert_eq!(h.records(), 1, "{reference:?}"),
+            (
+                false,
+                Err(Error::ModelVerification(VerifyFailure::Probability { tolerance, .. })),
+            ) => {
+                assert_eq!(tolerance, 1e-6, "the engine row is the one that answered");
+                assert_eq!(h.records(), 0, "a failure is never cached");
+            }
+            (accepted, other) => {
+                panic!("{reference:?} accepted={accepted}: {:?}", other.map(|_| ()))
+            }
+        }
+    }
+    // an engine-recorded variant whose numbers are exactly what the engine gives passes
+    let fixture = Builder::tiny_fake()
+        .set("variants.0.selfcheck.reference", s("engine"))
+        .build();
+    let h = Harness::new();
+    h.load(&h.local(fixture.path())).unwrap();
+    assert_eq!(h.records(), 1);
 }
