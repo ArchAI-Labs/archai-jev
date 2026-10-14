@@ -14,7 +14,7 @@ use super::manifest::HeadSpec;
 use crate::convert::headpt::HeadPtReader;
 use crate::engine::llama::{LlamaConfig, LlamaForward};
 use crate::error::{Error, Result};
-use crate::heads::{Head, LettersHead, PointerHead};
+use crate::heads::{Head, KeyLogProbHead, LettersHead, PointerHead};
 use crate::model_scorer::ModelScorer;
 use crate::prefix::{Fingerprint, FingerprintParts};
 use crate::prompt::template::instantiate;
@@ -82,7 +82,12 @@ impl Backend for LlamaBackend {
         );
         let tokenizer = PromptTokenizer::from_file(&checkpoint.tokenizer_path, roles)?;
 
-        let (head, hidden_states, max_options): (Box<dyn Head>, bool, usize) = match &m.head {
+        let (head, hidden_states, max_options, max_key_tokens): (
+            Box<dyn Head>,
+            bool,
+            usize,
+            usize,
+        ) = match &m.head {
             HeadSpec::Letters {
                 choice_targets,
                 yes_no,
@@ -91,7 +96,22 @@ impl Backend for LlamaBackend {
                 Box::new(LettersHead::new(choice_targets, yes_no.as_ref())),
                 false,
                 choice_targets.len(),
+                1,
             ),
+            HeadSpec::KeyLogProb {
+                max_options,
+                max_key_tokens,
+                ..
+            } => {
+                let options = usize::try_from(*max_options).unwrap_or(usize::MAX);
+                let tokens = usize::try_from(*max_key_tokens).unwrap_or(usize::MAX);
+                (
+                    Box::new(KeyLogProbHead::new(options, tokens)),
+                    false,
+                    options,
+                    tokens,
+                )
+            }
             HeadSpec::Pointer {
                 d_model, proj_dim, ..
             } => {
@@ -105,6 +125,7 @@ impl Backend for LlamaBackend {
                     Box::new(PointerHead::from_tensors(&tensors, *d_model, *proj_dim)?),
                     true,
                     255,
+                    1,
                 )
             }
         };
@@ -113,6 +134,7 @@ impl Backend for LlamaBackend {
             m.template.version,
             m.tasks.as_deref(),
             max_options,
+            max_key_tokens,
         )
         .map_err(Error::IncompatibleModel)?;
 
@@ -131,6 +153,12 @@ impl Backend for LlamaBackend {
             },
         )?
         .with_max_concurrency(self.max_concurrency);
+        let forward = match &m.head {
+            HeadSpec::KeyLogProb { max_key_tokens, .. } => {
+                forward.with_key_scoring(u32::try_from(*max_key_tokens).unwrap_or(u32::MAX))
+            }
+            _ => forward,
+        };
 
         let engine_text = forward.engine_fingerprint();
         let fingerprint = Fingerprint::new(&FingerprintParts {

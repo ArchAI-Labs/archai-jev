@@ -18,17 +18,17 @@ How the model is used (the whole point of this demo)
 -----------------------------------------------------
 Each claim is ONE call to ``Jev.ask``:
 
-    state     = the briefing                  (the premise)
-    question  = YesNo(<the claim>, ...)       (the hypothesis)
+    state     = the briefing
+    question  = YesNo("Is this statement supported by the text? <the claim>")
 
 and the answer is a typed value with a probability: ``answer.probability`` is P(yes).
 There is no text generation and no parsing of free text anywhere in this file.
 
 Honest limits (please read before recording a video)
 -----------------------------------------------------
-* ``Jev.from_pretrained()`` loads a small DEMO model that answers exactly four fixed
-  tasks. We use the ``entailment`` one. Any other question raises
-  ``UnsupportedRequestError``: this is a deliberate safety feature of the library.
+* ``Jev.from_pretrained()`` loads a small general model (1.5 billion parameters) that is
+  reliable on the kinds of task it was trained on, and not on others: a question it
+  cannot score raises ``UnsupportedRequestError``, a deliberate safety feature.
 * The model is overconfident outside its training distribution and it can be wrong.
   The game shows its accuracy on the game over screen, mistakes included.
 * Speed numbers on screen are measured on YOUR machine, live. Nothing here is a claim.
@@ -75,14 +75,9 @@ except ImportError:  # pragma: no cover - only matters for --headless on such sy
 # ======================================================================================
 # 1. THE QUESTION WE ASK THE MODEL
 # ======================================================================================
-# The default model was trained on four fixed prompts. For the "entailment" task the
-# prompt contains these two descriptions, so we must pass exactly the same text. If we
-# changed a single character the library would refuse to answer (fail-closed) instead
-# of returning probabilities it cannot vouch for.
-ENTAILMENT_CRITERIA = {
-    "true": "The condition is valid and supported by state.",
-    "false": "The condition is invalid or contradicted.",
-}
+# The question is plain English: the model was trained on entailment ("does the text
+# support this statement?"), so we ask exactly that.
+QUESTION = "Is this statement supported by the text? "
 
 
 def configure_threads(requested: int | None, reserve_for_ui: bool) -> None:
@@ -107,11 +102,11 @@ def configure_threads(requested: int | None, reserve_for_ui: bool) -> None:
 def p_claim_is_true(jev: Jev, briefing: str, claim: str) -> float:
     """Ask the model: "is ``claim`` supported by ``briefing``?" and return P(yes).
 
-    ``state`` is the premise and the question's ``instructions`` are the hypothesis.
+    ``state`` is the briefing and the question's ``instructions`` carry the claim.
     The answer is a ``YesNoAnswer``; its ``probability`` is a float in [0, 1] that
     already includes the model's declared calibration.
     """
-    answers = jev.ask(briefing, {"claim": YesNo(claim, ENTAILMENT_CRITERIA)})
+    answers = jev.ask(briefing, {"claim": YesNo(QUESTION + claim)})
     return answers.yes_nos["claim"].probability
 
 
@@ -886,8 +881,8 @@ class Game:
             Label(c, W // 2, 320 + i * 30, line, 12, WHITE)
         self.press_space = Label(c, W // 2, 490, "PRESS SPACE TO START", 22, YELLOW)
         notes = (
-            "DEMO MODEL: 4 fixed tasks, trained on one distribution,",
-            "overconfident outside it. It can be wrong.",
+            "SMALL MODEL: reliable on the tasks it was trained on,",
+            "overconfident outside them. It can be wrong.",
             "The numbers on screen are measured live on this computer.",
         )
         for i, note in enumerate(notes):

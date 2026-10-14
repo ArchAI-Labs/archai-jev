@@ -5,6 +5,7 @@
 //! needs the roles the family says (spec 005 section 6.1, spec 006a section 2).
 
 use super::chatml::{CHATML_LETTERS_V1, ChatMlLetters};
+use super::di::{DECISION_INDEX_CHATML_V1, DecisionIndexChatMl};
 use super::kev::{KEV_V1, KevV1};
 use super::limits::RequestLimits;
 use super::prompt::Prompt;
@@ -42,13 +43,14 @@ pub trait Template: Send + Sync {
 
 /// The template called `id` at `version`, if it exists (without the tasks of any model).
 pub fn lookup(id: &str, version: u64) -> Option<&'static dyn Template> {
-    let all: [&'static dyn Template; 2] = [&KEV_V1, &CHATML_LETTERS_V1];
+    let all: [&'static dyn Template; 3] = [&KEV_V1, &CHATML_LETTERS_V1, &DECISION_INDEX_CHATML_V1];
     all.into_iter()
         .find(|t| t.id() == id && t.version() == version)
 }
 
 /// The template of a model: the one called `id` at `version`, with the tasks of the manifest
-/// (only `chatml-letters` reads them).
+/// (only `chatml-letters` reads them) and the most tokens of an option key (only
+/// `decision-index-chatml` reads it).
 ///
 /// # Errors
 /// [`Incompat`] if the template does not exist or the tasks are not valid for it.
@@ -57,6 +59,7 @@ pub fn instantiate(
     version: u64,
     tasks: Option<&[Task]>,
     max_options: usize,
+    max_key_tokens: usize,
 ) -> std::result::Result<Box<dyn Template>, Incompat> {
     match (id, version) {
         ("kev", 1) => Ok(Box::new(KevV1)),
@@ -64,9 +67,10 @@ pub fn instantiate(
             let specs = tasks.map(|t| tasks::parse(t, max_options)).transpose()?;
             Ok(Box::new(ChatMlLetters::new(specs)))
         }
+        ("decision-index-chatml", 1) => Ok(Box::new(DecisionIndexChatMl::new(max_key_tokens))),
         _ => Err(Incompat::TemplateMismatch {
             family: String::new(),
-            expected: "kev v1 or chatml-letters v1".to_string(),
+            expected: "kev v1, chatml-letters v1 or decision-index-chatml v1".to_string(),
             got: format!("{id} v{version}"),
         }),
     }

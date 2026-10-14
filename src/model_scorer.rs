@@ -311,6 +311,9 @@ mod prefix_tests;
 mod cache_tests;
 
 #[cfg(test)]
+mod key_tests;
+
+#[cfg(test)]
 mod pool_tests;
 
 #[cfg(test)]

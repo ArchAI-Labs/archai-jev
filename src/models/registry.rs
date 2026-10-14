@@ -15,6 +15,7 @@ use crate::json_strict::{self, Json, Obj};
 /// Manifests of the built-in models (one file per entry, included at compile time).
 const BUILTIN_MANIFESTS: &[&str] = &[
     include_str!("registry/nickprock__archai-jev-qwen-1.5b.json"),
+    include_str!("registry/nickprock__archai-jev-qwen-1.5b@7730248d.json"),
     include_str!("registry/jaredpalmer__kev-0.8b.json"),
 ];
 /// Which entry is the default and which revision of each name is current.
@@ -316,9 +317,13 @@ mod tests {
     }
 
     #[test]
-    fn the_default_entry_declares_what_the_demo_model_is() {
+    fn the_v1_revision_declares_what_the_demo_model_is() {
+        // the first revision (tag v1): no longer the default, still a pinned, loadable entry
         let reg = Registry::builtin().unwrap();
-        let m = reg.default_entry().unwrap();
+        let m = reg
+            .resolve("nickprock/archai-jev-qwen-1.5b", Some("e4f3964a"))
+            .unwrap();
+        assert!(!reg.is_default(m));
         assert_eq!(m.name, "nickprock/archai-jev-qwen-1.5b");
         assert_eq!(m.family, "qwen2-letters");
         assert_eq!(
@@ -404,6 +409,52 @@ mod tests {
                 "no self-check vector for {id}"
             );
         }
+    }
+
+    #[test]
+    fn the_v2_is_the_current_and_default_revision_and_the_v1_stays_reachable() {
+        let reg = Registry::builtin().unwrap();
+        let name = "nickprock/archai-jev-qwen-1.5b";
+        let current = reg.resolve(name, None).unwrap();
+        assert_eq!(current.revision, "7730248dc1b411f594ec88c657d26285decb3cb9");
+        assert!(reg.is_default(current));
+        assert_eq!(
+            reg.default_entry().map(|m| &m.revision),
+            Some(&current.revision)
+        );
+        // the v1 is a revision of the same name, found by its 8-digit prefix
+        let v1 = reg.resolve(name, Some("e4f3964a")).unwrap();
+        assert_eq!(v1.revision, "e4f3964abbc746f164f6cd009104e5213decba80");
+        assert!(!reg.is_default(v1));
+        // an 8-digit prefix is enough for the v2 too: another family, head, template, no tasks
+        let v2 = reg.resolve(name, Some("7730248d")).unwrap();
+        assert!(std::ptr::eq(v2, current));
+        assert_eq!(v2.family, "qwen2-keys");
+        assert_eq!(
+            (v2.template.id.as_str(), v2.template.version),
+            ("decision-index-chatml", 1)
+        );
+        assert!(v2.tasks.is_none());
+        assert!(matches!(
+            v2.head,
+            HeadSpec::KeyLogProb {
+                max_options: 8,
+                max_key_tokens: 4,
+                ..
+            }
+        ));
+        let q8 = v2.variants.iter().find(|v| v.dtype == "q8_0").unwrap();
+        assert!(q8.calibration.declared);
+        assert_eq!(q8.calibration.temperature, Some(1.7497));
+        // the weights are the very file the v2 commit publishes
+        let Source::Gguf { file } = &q8.source else {
+            panic!("a GGUF source")
+        };
+        assert_eq!(
+            file.sha256,
+            "5dfad79eba479688fbd4bc5b43dd8279aeb5a49259f73a0a3f330b38790aa809"
+        );
+        assert_eq!(file.size, 1_646_572_736);
     }
 
     #[test]
@@ -543,7 +594,7 @@ mod quantized_lint_tests {
         assert_eq!(m.default_dtype, "q8_0");
         let v = m.variant("q8_0").unwrap();
         assert!(v.calibration.declared);
-        assert_eq!(v.calibration.temperature, Some(2.09));
+        assert_eq!(v.calibration.temperature, Some(1.7497));
     }
 
     #[test]
@@ -553,9 +604,15 @@ mod quantized_lint_tests {
         // ... and each missing piece is refused, naming what is missing
         let err = lint_after_changing_evidence(|e| e.replace("q8_0", "the variant")).unwrap_err();
         assert!(err.contains("must name its dtype"), "{err}");
-        let err = lint_after_changing_evidence(|e| e.replace("n=1449", "1449 rows")).unwrap_err();
+        // the v2 evidence gives four sizes (fit, test, two out-of-distribution sets): one left is not enough
+        let err = lint_after_changing_evidence(|e| e.replace("n=", "rows ")).unwrap_err();
         assert!(err.contains("two sample sizes"), "{err}");
-        let err = lint_after_changing_evidence(|e| e.replace("n=1447", "1447 rows")).unwrap_err();
+        let err = lint_after_changing_evidence(|e| {
+            e.replace("n=2677", "2677 rows")
+                .replace("n=1200", "1200 rows")
+                .replace("n=900", "900 rows")
+        })
+        .unwrap_err();
         assert!(err.contains("two sample sizes"), "{err}");
         let err =
             lint_after_changing_evidence(|e| e.replace("ECE", "calibration error")).unwrap_err();

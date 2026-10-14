@@ -109,6 +109,10 @@ class ModelInfo:
         is_default: Only for :func:`list_models`: whether this is the default model.
         variants: Every variant of the weights the model offers (not only the one loaded), in
             the manifest's order; ``None`` for the test scorer.
+        max_options: The most options of a ``Choice`` the model answers; a question with more is
+            refused with :class:`UnsupportedRequestError`. ``None`` if the model has no limit of
+            its own.
+        max_key_tokens: The most tokens of an option key (only for models that score the keys).
     """
 
     name: str
@@ -127,6 +131,8 @@ class ModelInfo:
     notice: str | None = None
     is_default: bool | None = None
     variants: tuple[VariantInfo, ...] | None = None
+    max_options: int | None = None
+    max_key_tokens: int | None = None
 
 
 def _info(raw: dict[str, Any]) -> ModelInfo:
@@ -146,7 +152,9 @@ def _info(raw: dict[str, Any]) -> ModelInfo:
 def list_models() -> tuple[ModelInfo, ...]:
     """The models this version of archai-jev knows by name, with the default marked.
 
-    Static data: no network and no disk access.
+    One entry per name, at its current revision; an older or newer revision of the same name is
+    loaded by asking for it (``from_pretrained(name, revision=...)``). Static data: no network and
+    no disk access.
     """
     return tuple(_info(d) for d in _core.list_models())
 

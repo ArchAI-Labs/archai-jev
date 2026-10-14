@@ -12,8 +12,8 @@ Why this matters
 ----------------
 A wrong probability returned silently is the worst failure of a decision model: your
 program trusts it and acts on it. So the library prefers to stop. Prompts that are too
-long are refused (never truncated), questions the model was not trained for are refused
-(never "adapted"), and a model that does not pass its self-check does not load.
+long are refused (never truncated), requests the model does not score are refused (never
+"adapted"), and a model that does not pass its self-check does not load.
 
 Run it
 ------
@@ -30,7 +30,7 @@ from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 
-from _common import ENTAILMENT_CRITERIA, section, show_download_progress, title
+from _common import section, show_download_progress, title
 
 from archai_jev import (
     Choice,
@@ -41,6 +41,7 @@ from archai_jev import (
     JevError,
     ModelDownloadError,
     NumericalError,
+    Score,
     UnsupportedRequestError,
     YesNo,
 )
@@ -148,7 +149,8 @@ def main() -> None:
     section("3. Request errors (the real model)")
     show_download_progress()
     jev = Jev.from_pretrained()
-    yes_no = YesNo("The text is about cooking.", ENTAILMENT_CRITERIA)
+    yes_no = YesNo("Is the text about cooking?")
+    limit = jev.model_info.max_options or 0
 
     # Errors found BEFORE any computation, in the objects you build:
     attempt(
@@ -172,21 +174,31 @@ def main() -> None:
     )
 
     # Errors because THIS model cannot answer THIS request faithfully. The request is
-    # valid in itself; the model was simply not trained for it.
+    # valid in itself; the model just does not score it. Each message names the limit
+    # and the value you gave. The limits are in ``jev.model_info``.
     attempt(
-        "a question the model was not trained for",
-        lambda: jev.ask("hello", {"q": Choice("Which colour?", ["red", "blue"])}),
+        f"more than {limit} options (the model's limit)",
+        lambda: jev.ask(
+            "hello", {"q": Choice("Which number?", [f"n{i}" for i in range(limit + 1)])}
+        ),
         UnsupportedRequestError,
     )
     attempt(
-        "a dict as the state of a text task",
-        lambda: jev.ask({"text": "hello"}, {"q": yes_no}),
+        "an option key that is too long",
+        lambda: jev.ask(
+            "hello", {"q": Choice("Which one?", ["a" * 40, "b"])}  # many tokens
+        ),
+        UnsupportedRequestError,
+    )
+    attempt(
+        "a Score question (this model does not score levels)",
+        lambda: jev.ask("hello", {"q": Score("How polite?", ["low", "high"])}),
         UnsupportedRequestError,
     )
 
-    # The prompt is longer than the 512 tokens the model was trained to read. A "helpful"
-    # library would cut the text and answer anyway, with probabilities that no longer
-    # describe the text you sent. This one refuses and tells you the numbers.
+    # The prompt is longer than the tokens the model accepts (``model_info.max_context``).
+    # A "helpful" library would cut the text and answer anyway, with probabilities that
+    # no longer describe the text you sent. This one refuses and tells you the numbers.
     attempt(
         "a text longer than the model's context",
         lambda: jev.ask("word " * 1200, {"q": yes_no}),

@@ -34,7 +34,7 @@ def test_kev_is_a_known_model_with_two_variants() -> None:
     )
     assert kev.license == "Apache-2.0" and (kev.max_context or 0) >= 1
     assert kev.notice and "bf16" in kev.notice
-    assert not kev.is_default, "the demo model stays the default"
+    assert not kev.is_default, "the Decision Index model is the default"
     assert models["nickprock/archai-jev-qwen-1.5b"].is_default
 
 

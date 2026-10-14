@@ -2,7 +2,7 @@
 
 What you will learn
 -------------------
-* how to use the ``entailment`` task as a *fact checker* for generated text,
+* how to use a ``YesNo`` question as a *fact checker* for generated text,
 * how to ask MANY questions about ONE state in a single ``ask`` call,
 * how to turn a probability into a decision, and why the threshold is yours to choose,
 * what a YesNo answer can and cannot tell you.
@@ -18,7 +18,7 @@ Run it
 ------
     python demos/002_grounding_check.py
 
-The default model reads at most 512 tokens per question (roughly 350 words), including the
+The default model reads at most 768 tokens per question (roughly 500 words), including the
 source. A longer document must be split in chunks first: the library refuses to truncate
 text silently (demo 004 shows the error).
 """
@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import textwrap
 
-from _common import ENTAILMENT_CRITERIA, bar, section, show_download_progress, title
+from _common import bar, section, show_download_progress, title
 
 from archai_jev import Jev, YesNo
 
@@ -66,12 +66,12 @@ def main() -> None:
     # ----------------------------------------------------------------------------------
     # One question per sentence, all about the same state (the source).
     #
-    # The state is the premise, and each question's first argument is a hypothesis:
-    # "is this sentence supported by the source?". We give every question a name (s0, s1,
-    # ...) to find its answer later. The criteria are the fixed wording of the task.
+    # The state is the source, and each question asks "is this sentence supported by the
+    # source?". We give every question a name (s0, s1, ...) to find its answer later.
+    # All ten questions share the same state, so the model reads the source only once.
     # ----------------------------------------------------------------------------------
     questions = {
-        f"s{i}": YesNo(sentence, ENTAILMENT_CRITERIA)
+        f"s{i}": YesNo(f"Is this statement supported by the text? {sentence}")
         for i, (sentence, _label) in enumerate(ANSWER)
     }
 
@@ -120,8 +120,8 @@ def main() -> None:
     # separate them. For a fact checker that is usually what you want (both are
     # "unsupported"), but do not read "low" as "false".
     #
-    # Remember also that this is a small demo model: it is overconfident outside the data
-    # it was trained on, and these ten sentences are an easy, hand-made test. Treat the
+    # Remember also that this is a small model: it is overconfident outside the data it
+    # was trained on, and these ten sentences are an easy, hand-made test. Treat the
     # output as a first filter that points a human at the doubtful sentences.
     # ----------------------------------------------------------------------------------
 

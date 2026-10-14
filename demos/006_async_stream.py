@@ -14,9 +14,8 @@ Customer messages arrive in a stream. For each one we want to know "does this cu
 to cancel their subscription?" (so we can send it to the retention team). The question is
 always the same, only the text changes: exactly what ``ask_many`` is for.
 
-(Trick worth noticing: we use the ``entailment`` task as a flexible yes/no classifier. The
-message is the premise and the question is the statement we want to test. You are not
-limited to the four sentences of the training set: ANY statement can be the hypothesis.)
+(Worth noticing: a ``YesNo`` question is a flexible classifier. The message is the state and
+the question is the statement we want to test: ANY statement can be the question.)
 
 Run it
 ------
@@ -29,14 +28,12 @@ import asyncio
 import itertools
 import time
 
-from _common import ENTAILMENT_CRITERIA, bar, section, show_download_progress, title
+from _common import bar, section, show_download_progress, title
 
 from archai_jev import Jev, YesNo
 
 # The statement we test on every message. Built once, reused for every message.
-WANTS_TO_CANCEL = YesNo(
-    "The customer wants to cancel their subscription.", ENTAILMENT_CRITERIA
-)
+WANTS_TO_CANCEL = YesNo("The customer wants to cancel their subscription.")
 
 # (message, does the customer really want to cancel?). The label is OUR OWN, used only to
 # count the model's mistakes. It includes tricky cases: "cancel" about a meeting, and a

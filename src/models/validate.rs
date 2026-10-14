@@ -178,6 +178,12 @@ pub fn semantics(m: &Manifest, converter_kinds: &[String]) -> Result<Resolved, I
         });
     }
     check_tasks(m)?;
+    if family.head_kind == "key_logprob" && m.tasks.is_some() {
+        // the family answers any Choice/YesNo: a closed set of tasks has nothing to match
+        return Err(Incompat::TasksNotSupported {
+            family: family.key.to_string(),
+        });
+    }
     if family.head_kind == "pointer" {
         if m.tasks.is_some() {
             return Err(Incompat::TasksNotSupported {

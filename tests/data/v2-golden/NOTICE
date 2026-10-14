@@ -1,0 +1,18 @@
+archai-jev test data: golden of the v2 model (Decision Index format)
+====================================================================
+
+The requests in golden.jsonl (states, instructions, options) were written by the authors of
+archai-jev and are covered by the licence of this repository (Apache-2.0). No text of any dataset is
+included.
+
+The numbers (the ids of the prompts, the token ids of the option keys, the scores and the
+probabilities) are outputs of the reference engine of the Decision Index kit, run on the model
+nickprock/archai-jev-qwen-1.5b:
+
+  Model  https://huggingface.co/nickprock/archai-jev-qwen-1.5b   revision 7730248dc1b411f594ec88c657d26285decb3cb9 (Apache-2.0)
+  Base   https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct       revision 989aa7980e4cf806f80c7fef2b1adb7bc71aa306 (Apache-2.0)
+  Kit    Decision Index, commit 9eb2dbe2a358004c8782c66e40a83ac07b953fec (MIT): the format and the
+         reference scoring; none of its code is included here.
+
+The data was transformed (reduced to the fields listed in PROVENANCE.json). No model weights and
+no tokenizer files are included.

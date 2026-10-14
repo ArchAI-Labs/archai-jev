@@ -39,6 +39,10 @@ fn rebase(spec: &OutputSpec, state_len: usize, shared_end: usize) -> Result<Outp
             position: shift(*position)?,
             ids: ids.clone(),
         },
+        OutputSpec::KeyLogProbs { position, keys } => OutputSpec::KeyLogProbs {
+            position: shift(*position)?,
+            keys: keys.clone(),
+        },
     })
 }
 

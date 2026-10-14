@@ -13,19 +13,6 @@ import logging
 import re
 import sys
 
-# The default model was trained on four fixed prompts. Two of them are yes/no questions
-# ("YesNo") and their wording is part of the prompt: the library only accepts them
-# with exactly these two descriptions. If you change a single character you get an
-# UnsupportedRequestError instead of probabilities it cannot vouch for.
-ENTAILMENT_CRITERIA = {
-    "true": "The condition is valid and supported by state.",
-    "false": "The condition is invalid or contradicted.",
-}
-SIMILARITY_CRITERIA = {
-    "true": "The two texts have equivalent meaning or intent.",
-    "false": "The texts have different meanings.",
-}
-
 _PROGRESS = re.compile(r": (\d+) of (\d+) bytes$")
 
 

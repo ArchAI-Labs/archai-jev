@@ -61,6 +61,16 @@ pub enum HeadSpec {
         /// `(no, yes)` targets for YesNo, if supported.
         yes_no: Option<(Target, Target)>,
     },
+    /// Score each option by the log-probabilities of its key (spec 010).
+    KeyLogProb {
+        /// Only `sum_logprob_full_vocab` exists: the sum over the key tokens of their
+        /// log-probability normalised over the whole vocabulary.
+        rule: String,
+        /// The most options of a question.
+        max_options: u64,
+        /// The most tokens of an option key.
+        max_key_tokens: u64,
+    },
     /// Kev's pointer head: two projections and a dot product.
     Pointer {
         /// Hidden size of the backbone.
@@ -73,10 +83,29 @@ pub enum HeadSpec {
 }
 
 impl HeadSpec {
+    /// The most options of a question the head answers, if it has a limit of its own: the number
+    /// of answer letters, or the declared `max_options`. A pointer head has none.
+    pub fn max_options(&self) -> Option<u64> {
+        match self {
+            HeadSpec::Letters { choice_targets, .. } => Some(choice_targets.len() as u64),
+            HeadSpec::KeyLogProb { max_options, .. } => Some(*max_options),
+            HeadSpec::Pointer { .. } => None,
+        }
+    }
+
+    /// The most tokens of an option key, for a head that scores keys.
+    pub fn max_key_tokens(&self) -> Option<u64> {
+        match self {
+            HeadSpec::KeyLogProb { max_key_tokens, .. } => Some(*max_key_tokens),
+            _ => None,
+        }
+    }
+
     /// The kind name used in manifests.
     pub fn kind(&self) -> &'static str {
         match self {
             HeadSpec::Letters { .. } => "letters",
+            HeadSpec::KeyLogProb { .. } => "key_logprob",
             HeadSpec::Pointer { .. } => "pointer",
         }
     }
@@ -353,6 +382,34 @@ fn parse_head(o: &mut Obj<'_>, family: &str, registry: bool) -> Result<HeadSpec,
                 yes_no,
             }
         }
+        "key_logprob" => {
+            let rule = h.str("rule")?.to_string();
+            if rule != "sum_logprob_full_vocab" {
+                return Err(bad(
+                    &h.child_path("rule"),
+                    format!("must be \"sum_logprob_full_vocab\", got {rule:?}"),
+                ));
+            }
+            let max_options = h.u64("max_options")?;
+            if !(1..=255).contains(&max_options) {
+                return Err(bad(
+                    &h.child_path("max_options"),
+                    format!("must be from 1 to 255, got {max_options}"),
+                ));
+            }
+            let max_key_tokens = h.u64("max_key_tokens")?;
+            if !(1..=64).contains(&max_key_tokens) {
+                return Err(bad(
+                    &h.child_path("max_key_tokens"),
+                    format!("must be from 1 to 64, got {max_key_tokens}"),
+                ));
+            }
+            HeadSpec::KeyLogProb {
+                rule,
+                max_options,
+                max_key_tokens,
+            }
+        }
         "pointer" => {
             let d_model = h.u64("d_model")?;
             let proj_dim = h.u64("proj_dim")?;
@@ -367,7 +424,7 @@ fn parse_head(o: &mut Obj<'_>, family: &str, registry: bool) -> Result<HeadSpec,
         other => {
             return Err(Incompat::HeadMismatch {
                 family: family.to_string(),
-                expected: "one of: letters, pointer".to_string(),
+                expected: "one of: letters, key_logprob, pointer".to_string(),
                 got: other.to_string(),
             });
         }

@@ -63,6 +63,15 @@ pub fn lookup(family: &str, dtype: &str, reference: Reference) -> Option<Toleran
             logit: Some(0.25),
             p: 7e-2,
         },
+        // spec 010: provisional, the same as the letters family until the spike S11 measures them
+        ("qwen2-keys", "f32" | "bf16", FullPrecision) => Tolerance {
+            logit: None,
+            p: 1.5e-2,
+        },
+        ("qwen2-keys", "q8_0", FullPrecision) => Tolerance {
+            logit: None,
+            p: 0.2,
+        },
         ("qwen2-letters", "f32" | "bf16", FullPrecision) => Tolerance {
             logit: None,
             p: 1.5e-2,
@@ -79,10 +88,12 @@ pub fn lookup(family: &str, dtype: &str, reference: Reference) -> Option<Toleran
         // study rows (spec 009): refuse nothing, so that a K-quant can be loaded and MEASURED;
         // never in a release build
         #[cfg(feature = "quant-study")]
-        ("qwen2-letters", "q6_k" | "q5_k_m" | "q4_k_m", FullPrecision) => Tolerance {
-            logit: None,
-            p: 1.0,
-        },
+        ("qwen2-letters" | "qwen2-keys", "q6_k" | "q5_k_m" | "q4_k_m", FullPrecision) => {
+            Tolerance {
+                logit: None,
+                p: 1.0,
+            }
+        }
         // a tight row for the engine-recorded rule (spec 009 section 4), to test the mechanism
         #[cfg(feature = "testing")]
         ("test-fake", "f32", Engine) => Tolerance {
@@ -104,6 +115,9 @@ pub fn all() -> Vec<(&'static str, &'static str, Reference)> {
         ("qwen2-letters", "f32", Reference::FullPrecision),
         ("qwen2-letters", "bf16", Reference::FullPrecision),
         ("qwen2-letters", "q8_0", Reference::FullPrecision),
+        ("qwen2-keys", "f32", Reference::FullPrecision),
+        ("qwen2-keys", "bf16", Reference::FullPrecision),
+        ("qwen2-keys", "q8_0", Reference::FullPrecision),
     ];
     #[cfg(feature = "testing")]
     rows.extend([
@@ -118,6 +132,9 @@ pub fn all() -> Vec<(&'static str, &'static str, Reference)> {
         ("qwen2-letters", "q6_k", Reference::FullPrecision),
         ("qwen2-letters", "q5_k_m", Reference::FullPrecision),
         ("qwen2-letters", "q4_k_m", Reference::FullPrecision),
+        ("qwen2-keys", "q6_k", Reference::FullPrecision),
+        ("qwen2-keys", "q5_k_m", Reference::FullPrecision),
+        ("qwen2-keys", "q4_k_m", Reference::FullPrecision),
     ]);
     rows
 }
@@ -206,7 +223,7 @@ mod name_tests {
     fn every_name_has_a_row_and_every_real_row_has_a_name() {
         // spec 009 AC-1: the dtypes a release accepts and the dtypes it can verify are the
         // same set (for the real families; the test families are not names users can pick)
-        for family in ["qwen2-letters"] {
+        for family in ["qwen2-letters", "qwen2-keys"] {
             for d in recipes::DTYPES {
                 assert!(
                     lookup(family, d, Reference::FullPrecision).is_some(),
@@ -215,7 +232,7 @@ mod name_tests {
             }
         }
         for (f, d, _) in all() {
-            if f == "qwen2-letters" || f == "qwen35-pointer" {
+            if f == "qwen2-letters" || f == "qwen2-keys" || f == "qwen35-pointer" {
                 assert!(
                     recipes::DTYPES.contains(&d),
                     "{f} {d} has a row but no name"

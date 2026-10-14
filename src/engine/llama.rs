@@ -65,6 +65,8 @@ pub struct LlamaForward {
     model: LlamaModel,
     config: LlamaConfig,
     pool: SlotPool,
+    /// Longest option key the model scores (spec 010); `0` = the model reads no keys.
+    key_tokens: u32,
 }
 
 impl LlamaForward {
@@ -81,7 +83,17 @@ impl LlamaForward {
             model,
             config,
             pool: SlotPool::new(1, budget),
+            key_tokens: 0,
         })
+    }
+
+    /// Let the model score option keys of up to `max_key_tokens` tokens
+    /// ([`OutputSpec::KeyLogProbs`], spec 010). It costs a third sequence in each context, where
+    /// the continuation of a key is decoded on a copy of the question.
+    #[must_use]
+    pub fn with_key_scoring(mut self, max_key_tokens: u32) -> Self {
+        self.key_tokens = max_key_tokens;
+        self
     }
 
     /// Let up to `k` requests run together (spec 008). The default is 1: requests wait their
@@ -117,6 +129,16 @@ impl LlamaForward {
     /// The engine and the settings of the contexts it creates, as a string for the identity of a
     /// saved prefix: built from what is really set, so changing a parameter changes the key.
     pub fn engine_fingerprint(&self) -> String {
+        if self.key_tokens > 0 {
+            return format!(
+                "llama-cpp-2=0.1.157; n_ctx=({}+{})x3; n_batch={}; n_ubatch={}; n_seq_max=3; embeddings={}; kv=library default",
+                self.config.max_context,
+                self.key_tokens,
+                self.config.max_context,
+                self.config.max_context,
+                self.config.hidden_states
+            );
+        }
         format!(
             "llama-cpp-2=0.1.157; n_ctx={}x2; n_batch={}; n_ubatch={}; n_seq_max=2; embeddings={}; kv=library default",
             self.config.max_context,
@@ -127,10 +149,13 @@ impl LlamaForward {
     }
 
     fn context_params(&self, threads: i32) -> Result<LlamaContextParams> {
-        let rows = 2u32; // sequence 0 holds the state, sequence 1 the question being run
+        // sequence 0 holds the state, sequence 1 the question being run and, if the model scores
+        // option keys, sequence 2 the continuation of one key
+        let rows = if self.key_tokens > 0 { 3u32 } else { 2u32 };
         let n_ctx = self
             .config
             .max_context
+            .saturating_add(self.key_tokens)
             .checked_mul(rows)
             .and_then(NonZeroU32::new)
             .ok_or_else(|| inference("max_context is zero or too large"))?;
@@ -176,6 +201,8 @@ struct LlamaSession<'a> {
     /// Tokens on sequence 0, the part every question starts from.
     shared_len: usize,
     hidden_states: bool,
+    /// Longest option key this session scores (0 = none).
+    key_tokens: u32,
     /// Last on purpose: the context is freed before the slot is given back.
     _slot: Slot<'a>,
 }
@@ -190,10 +217,12 @@ struct Reading<'s> {
     specs: &'s [OutputSpec],
     /// Where the last decode's batch starts, counted like the positions of the specs.
     last_start: usize,
+    /// How many tokens the row has after the shared part (the last one is at `row_end - 1`).
+    row_end: usize,
 }
 
 impl LlamaSession<'_> {
-    fn read(&self, reading: &Reading<'_>) -> Result<Vec<Output>> {
+    fn read(&mut self, reading: &Reading<'_>) -> Result<Vec<Output>> {
         let mut out = Vec::with_capacity(reading.specs.len());
         for spec in reading.specs {
             match spec {
@@ -217,6 +246,11 @@ impl LlamaSession<'_> {
                     let picked = super::pick_logits(row, ids, *position)?;
                     out.push(Output::Logits(picked));
                 }
+                OutputSpec::KeyLogProbs { position, keys } => {
+                    out.push(Output::KeyLogProbs(
+                        self.read_keys(*position, keys, reading)?,
+                    ));
+                }
                 #[allow(unreachable_patterns)]
                 _ => {
                     return Err(inference(
@@ -228,6 +262,70 @@ impl LlamaSession<'_> {
         Ok(out)
     }
 
+    /// The sum of the log-probabilities of each key as the continuation of the row (spec 010).
+    ///
+    /// The first token of every key is scored at the last token of the row, whose distribution
+    /// the last decode left in the logits. A longer key goes on, token by token, on a copy of the
+    /// row (sequence 2) that is discarded: the keys never see each other, which gives the same
+    /// numbers as the block-diagonal mask of the reference engine.
+    fn read_keys(
+        &mut self,
+        position: usize,
+        keys: &[Vec<u32>],
+        reading: &Reading<'_>,
+    ) -> Result<Vec<f64>> {
+        if position + 1 != reading.row_end {
+            return Err(inference("keys are scored after the last token of the row"));
+        }
+        let i = batch_index(position, reading.last_start)?;
+        let firsts: Vec<u32> = keys
+            .iter()
+            .map(|k| {
+                k.first()
+                    .copied()
+                    .ok_or_else(|| inference("a key without tokens cannot be scored"))
+            })
+            .collect::<Result<_>>()?;
+        let mut sums = super::log_probs_of(self.ctx.get_logits_ith(i), &firsts, position)?;
+        // positions count from the start of the sequence: the row ends at `last`
+        let last = self.shared_len + position;
+        for (sum, key) in sums.iter_mut().zip(keys) {
+            if key.len() < 2 {
+                continue;
+            }
+            if u32::try_from(key.len()).map_or(true, |n| n > self.key_tokens) {
+                return Err(inference(format!(
+                    "a key of {} tokens is longer than the {} this model was loaded to score",
+                    key.len(),
+                    self.key_tokens
+                )));
+            }
+            let steps = key.len() - 1;
+            self.ctx
+                .kv_cache_seq_cp(1, 2, None, None)
+                .map_err(|e| inference(format!("cannot copy the question: {e}")))?;
+            let result = (|| {
+                let given = key.get(..steps).unwrap_or_default();
+                decode(&mut self.ctx, given, last + 1, 2, &vec![true; steps])?;
+                let mut total = 0.0;
+                for (t, &next) in key.iter().skip(1).enumerate() {
+                    let at = i32::try_from(t).map_err(|_| inference("a key is too long"))?;
+                    let lp =
+                        super::log_probs_of(self.ctx.get_logits_ith(at), &[next], last + 1 + t)?;
+                    total += lp.first().copied().unwrap_or(f64::NAN);
+                }
+                Ok::<f64, Error>(total)
+            })();
+            let cleared = self
+                .ctx
+                .clear_kv_cache_seq(Some(2), None, None)
+                .map_err(|e| inference(format!("cannot clear the key: {e}")));
+            *sum += result?;
+            cleared?;
+        }
+        Ok(sums)
+    }
+
     /// The position of each spec, checking the model was loaded for that kind of output.
     fn positions(&self, outputs: &[OutputSpec]) -> Result<Vec<usize>> {
         outputs
@@ -236,6 +334,14 @@ impl LlamaSession<'_> {
                 let (position, wants_hidden) = match spec {
                     OutputSpec::Hidden { position } => (*position, true),
                     OutputSpec::Logits { position, .. } => (*position, false),
+                    OutputSpec::KeyLogProbs { position, .. } => {
+                        if self.key_tokens == 0 {
+                            return Err(inference(
+                                "this model was not loaded to score option keys",
+                            ));
+                        }
+                        (*position, false)
+                    }
                     #[allow(unreachable_patterns)]
                     _ => {
                         return Err(inference(
@@ -360,6 +466,7 @@ impl Session for LlamaSession<'_> {
             self.read(&Reading {
                 specs: outputs,
                 last_start,
+                row_end: total,
             })
         })();
         // The copy is discarded whatever happened: the next question starts from the state alone.
@@ -388,6 +495,7 @@ impl LlamaForward {
             ctx,
             shared_len: 0,
             hidden_states: self.config.hidden_states,
+            key_tokens: self.key_tokens,
             _slot: slot,
         })
     }

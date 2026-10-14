@@ -39,6 +39,20 @@ pub enum Unsupported {
         j: usize,
         text: String,
     },
+    /// An option key that the tokenizer turns into no token at all (spec 010).
+    KeyWithoutTokens {
+        question: String,
+        option: usize,
+        key: String,
+    },
+    /// An option key of more tokens than the head scores (spec 010).
+    KeyTooLong {
+        question: String,
+        option: usize,
+        key: String,
+        max: u64,
+        got: u64,
+    },
     /// The question is not one of the tasks the model was trained for (spec 006c section 3).
     TaskMismatch {
         question: String,
@@ -93,6 +107,28 @@ impl fmt::Display for Unsupported {
                 f,
                 "question {}: options {i} and {j} read exactly the same to the model after normalization (\"{text}\"); make them distinguishable",
                 quote(question)
+            ),
+            Unsupported::KeyWithoutTokens {
+                question,
+                option,
+                key,
+            } => write!(
+                f,
+                "question {}: the key {} of option {option} is turned into no token by the tokenizer; use another key",
+                quote(question),
+                quote(key)
+            ),
+            Unsupported::KeyTooLong {
+                question,
+                option,
+                key,
+                max,
+                got,
+            } => write!(
+                f,
+                "question {}: the key {} of option {option} is {got} tokens long, but the model scores keys of at most {max}; use a shorter key",
+                quote(question),
+                quote(key)
             ),
             Unsupported::TaskMismatch {
                 question,

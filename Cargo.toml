@@ -60,6 +60,10 @@ name = "quantization_dataset_ids"
 required-features = ["testing"]
 
 [[test]]
+name = "v2_parity"
+required-features = ["testing"]
+
+[[test]]
 name = "default_calibration"
 required-features = ["testing"]
 

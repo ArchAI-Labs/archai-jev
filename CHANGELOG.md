@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **General Choice/yes-no models in the Decision Index format** (spec 010): a new family of models,
+  `qwen2-keys`, answers any `Choice` or `YesNo` instead of a fixed set of tasks. The prompt is the
+  one of the Decision Index `transformers` engine (the benchmark suite of Jev models) inside the
+  ChatML chat template of Qwen2.5, and the score of an option is the sum of the log-probabilities
+  of the tokens of its key (one token or several), normalised over the whole vocabulary, then a
+  softmax across the options. A manifest declares `head.kind = "key_logprob"` with its limits
+  (`max_options`, `max_key_tokens`) and `template = decision-index-chatml`; it has no closed set of
+  tasks (`tasks: null`). A request the model cannot answer is refused before any computation, with
+  the limit and the value received: `Score` questions, more options than the model scores, an
+  option key of too many tokens (or none), two keys that are the same tokens, a prompt that with
+  its longest key does not fit the context. The prompt ids and the key ids are identical to the
+  reference engine's on the 87 questions of its golden, and the engine's scores are within 0.003
+  of its probabilities on the fp16 weights (0.06 on the published Q8_0). Questions about the same
+  state share the system block and the state through the cache of prefixes.
+- **See what a model accepts, and run the retrained model (v2)**: the registry now has a
+  second revision of `nickprock/archai-jev-qwen-1.5b` (`revision="7730248d"`), the Decision Index
+  model, with a declared calibration for its Q8_0 (temperature 1.7497, ECE 0.062 -> 0.009 on
+  held-out data of its training tasks; it stays overconfident on tasks it did not see, which the
+  `evidence` says). `ModelInfo.max_options` and
+  `max_key_tokens` tell how many options a `Choice` may have and how long an option key may be
+  (`None` when the model has no limit of its own); a request over a limit is refused with
+  `UnsupportedRequestError`, as before. `list_models()` shows one entry per model name, at its
+  current revision.
 - **See which weights a model offers**: `ModelInfo.variants` (a tuple of the new `VariantInfo`:
   `dtype`, `size_bytes`, `calibrated`, `temperature`, `is_default`), from `list_models()` and from
   a loaded model, with no network. Each variant carries **its own** calibration: a quantized
@@ -102,12 +125,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1.1 to 1.2 times, which is why Python keeps one request at a time.
 
 ### Changed
+- **The default model is now the Decision Index model (v2)**: `Jev.from_pretrained()` loads revision
+  `7730248d` of `nickprock/archai-jev-qwen-1.5b`, which answers any `Choice` (up to 8 options, keys
+  of up to 4 tokens) and any `YesNo`, instead of four fixed tasks. A `YesNo` is scored as the
+  Decision Index `noul` question; for a question about a long passage, a `Choice` with the keys
+  `yes` and `no` was clearly better in our measurement (accuracy 0.76 against 0.63 on BoolQ, and
+  within a few questions on five other tasks). `Score` is refused. The first release of the model
+  stays available: `Jev.from_pretrained("nickprock/archai-jev-qwen-1.5b", revision="e4f3964a")`.
+  The demos were rewritten for the generic model (`001_quickstart_four_tasks.py` is now
+  `001_quickstart.py`).
 - Prompts of the default model are now computed in segments (at the end of the task block and of
   the state) instead of in one pass. Answers stay within the tolerances of the model: on the golden
   prompts the largest difference from 0.1.0 was 0.48 on a raw logit and 0.033 on a probability,
   and no top answer changed. With the memory empty, warm or cleared the answers are identical bit
   for bit. `prefix_cache_mib=0` restores the 0.1.0 computation. A request with a single question
   about a text of a task never seen costs a little more than before (the prefix is saved).
+
+### Fixed
+- A prompt that was too long was refused with the message "state 0 + question N tokens", counting
+  the whole prompt as the question; it now reports the length of the state and of the rest.
 
 ## [0.1.0] - 2026-10-06
 

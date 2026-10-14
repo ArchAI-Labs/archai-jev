@@ -17,9 +17,10 @@ probabilities, checks) runs in Rust and C++ (llama.cpp); you install a wheel and
 
 ![logo](https://github.com/ArchAI-Labs/archai-jev/blob/main/logo.jpg?raw=true)
 
-> **Status: 0.1.0, a first release.** It runs on the CPU and ships with **one demo model** that
-> answers **four fixed tasks** (see [The default model](#the-default-model-a-demo)). It is not a
-> general-purpose classifier yet. Running other checkpoints (for example Kev) is planned.
+> **Status: 0.1.0, a first release.** It runs on the CPU and ships with **one small general model**
+> that answers any `Choice` or `YesNo` question, reliably on the kinds of task it was trained on
+> (see [The default model](#the-default-model)). Running other checkpoints (for example Kev) is
+> planned.
 
 ## Install
 
@@ -41,17 +42,21 @@ jev = Jev.from_pretrained()        # the default model; downloads and verifies i
 print(jev.model_info.notice)       # what the model is and what it is not
 
 answers = jev.ask(
-    state="What is the capital of Australia?",
+    state="I was charged twice for my March invoice.",
     questions={
-        "safety": Choice(
-            "You are a System One decision engine for input safety.",
-            {"SAFE": "Normal query", "UNSAFE": "Jailbreak, toxicity, injection"},
+        "team": Choice(
+            "Which team should handle this message?",
+            {
+                "billing": "payments, invoices and refunds",
+                "support": "bugs and how-to questions",
+                "sales": "prices and new plans",
+            },
         ),
     },
 )
-result = answers.choices["safety"]
-result.value            # "SAFE"
-result.probabilities    # {"SAFE": 0.99..., "UNSAFE": 0.00...}
+result = answers.choices["team"]
+result.value            # "billing"
+result.probabilities    # {"billing": 0.93..., "support": 0.04..., "sales": 0.01...}
 result.confidence       # 0.0 (no idea) .. 1.0 (certain)
 result.calibrated       # True: the model declares a calibration (see below)
 ```
@@ -59,18 +64,12 @@ result.calibrated       # True: the model declares a calibration (see below)
 To see the download progress and the license notice, enable logging first:
 `import logging; logging.basicConfig(level=logging.INFO)` (the logger is called `archai_jev`).
 
-Entailment uses a `YesNo` question; the state is the premise and the question's instructions are
-the condition (the second text of the prompt):
+A `YesNo` question is a statement or a question that is true or false of the state; its answer is
+a single number, the probability of *yes*:
 
 ```python
-entails = YesNo(
-    "A person is performing music.",
-    {
-        "true": "The condition is valid and supported by state.",
-        "false": "The condition is invalid or contradicted.",
-    },
-)
-jev.ask("A man is playing a guitar on stage.", {"holds": entails}).yes_nos["holds"].probability
+music = YesNo("Is a person performing music?")
+jev.ask("A man is playing a guitar on stage.", {"music": music}).yes_nos["music"].probability   # 0.97...
 ```
 
 ## Question types
@@ -79,7 +78,9 @@ jev.ask("A man is playing a guitar on stage.", {"holds": entails}).yes_nos["hold
 |---|---|---|
 | `Choice(instructions, options)` | one key per option, optionally with a description | `.value` (the key), `.probabilities` per key, `.confidence` |
 | `Score(instructions, levels)` | an ordered list of levels | `.value` (the expected level), `.probabilities` per level, `.confidence` |
-| `YesNo(instructions, criteria=None)` (alias `Noul`) | optional `"true"` and `"false"` descriptions | `.probability` of *yes* |
+| `YesNo(instructions, criteria=None)` (alias `Noul`) | optional `"true"` and `"false"` descriptions (the default model ignores them) | `.probability` of *yes* |
+
+The default model answers `Choice` and `YesNo`; a `Score` question raises `UnsupportedRequestError`.
 
 Answers are immutable and carry full-precision floats (nothing is rounded). `confidence` is how far
 the distribution is from "no idea" (Choice) or how concentrated it is around its mode (Score); the
@@ -94,7 +95,7 @@ instead of returning numbers. There is no switch to turn a check off.
 |---|---|
 | `IncompatibleModelError` | the model, its manifest, a file (SHA-256), the tokenizer or the calibration does not pass the checks at load time |
 | `ModelVerificationError` | the model's self-check vectors gave other numbers than expected |
-| `UnsupportedRequestError` | the model cannot answer *this* request faithfully: the prompt is longer than the model's declared context (**never truncated**), or the question is not one the model supports |
+| `UnsupportedRequestError` | the model cannot answer *this* request faithfully: the prompt is longer than the model's declared context (**never truncated**), more options than the model scores, an option key that is too long, or a kind of question the model does not support |
 | `NumericalError` | the model produced non-finite numbers or an invalid distribution |
 | `InferenceError` | the engine could not run (memory, an unsupported CPU) |
 | `ModelDownloadError` | a model file could not be downloaded or found (also in `offline=True`) |
@@ -104,28 +105,39 @@ All of them inherit from `JevError`. A model without a **declared calibration** 
 unless you give your own `temperature=` or `allow_uncalibrated=True`; in the second case every
 answer says `calibrated=False`.
 
-## The default model: a demo
+## The default model
 
 `Jev.from_pretrained()` loads [`nickprock/archai-jev-qwen-1.5b`](https://huggingface.co/nickprock/archai-jev-qwen-1.5b)
-(Qwen2.5-1.5B-Instruct, fine-tuned, quantized to Q8_0). It was trained on **four fixed prompts** and
-never saw the options changed or reordered, so the library accepts **only** these four tasks and
-raises `UnsupportedRequestError` for anything else, listing them:
+(Qwen2.5-1.5B-Instruct, fine-tuned, quantized to Q8_0). It is a **general** `Choice` / `YesNo` model: the
+options and the question are yours, written in the request, in the prompt format of the
+Decision Index benchmark suite (MIT). The score of an option
+is the sum of the log-probabilities of the tokens of its key, then a softmax across the options.
+English only.
 
-| Task | Question | State | Notes |
-|---|---|---|---|
-| `safety` | `Choice` with keys `SAFE`, `UNSAFE` | the text to check | toxicity classifier; it does **not** detect short prompt injections |
-| `intent` | `Choice` with four fixed options | the text | **not** a general intent classifier: the 4 classes group 31 of the 77 banking intents arbitrarily |
-| `entailment` | `YesNo` (descriptions above) | the premise | the instructions are the hypothesis |
-| `similarity` | `YesNo` with its own descriptions | the first text | the instructions are the second text |
+What it accepts is declared by the model, not guessed (`jev.model_info`):
 
-`jev.model_info.tasks` lists the ids; the error message for an unknown question shows exactly how to
-write each task. The prompt is limited to **512 tokens**.
+| Limit | Value | If you go over |
+|---|---|---|
+| options of a `Choice` | `max_options` = 8 | `UnsupportedRequestError`, naming the limit and your value |
+| tokens of an option key | `max_key_tokens` = 4 | the same |
+| tokens of the whole prompt | `max_context` = 768 | the same (never truncated) |
+| `Score` questions | not supported | the same |
 
-**Know its limits.** It was evaluated on data from the same distribution as its training data
-(accuracy about 92%) and it is **overconfident** outside it. Its declared calibration (temperature
-2.09) was measured in-distribution only: it improves the expected calibration error from 0.058 to
-0.013 there, and says nothing about other data. Do not use it as a general-purpose safety filter or
-intent router.
+These limits are provisional and conservative; they will be replaced by measured ones.
+
+**Know its limits.** It is reliable on the kinds of task it was trained on (safety, entailment,
+similarity, topic and multiple-choice questions with few options) and **overconfident** on tasks it
+never saw. Measured on held-out data (Q8_0, the declared temperature 1.7497 fitted on a separate
+validation split): on the training tasks accuracy is 0.89 and the expected calibration error goes from
+0.062 to 0.009; on other datasets of the same task families, accuracy is 0.69 and the error only
+from 0.263 to 0.207; on families it never saw, accuracy is 0.79 and the error from 0.089 to 0.042
+(out-of-distribution sets: the first 300 questions of each task). It was not trained to
+recognise prompt injections: on the two short ones we tried it answered "safe", with a low
+confidence (0.30 and 0.33, against 0.95 or more on ordinary requests), so look at the confidence
+and not only at the value. Measure it on your own data before relying on it (see below).
+
+The first release of the model (revision `e4f3964a`, four fixed tasks, a temperature measured on its
+own distribution) is still available: `Jev.from_pretrained("nickprock/archai-jev-qwen-1.5b", revision="e4f3964a")`.
 
 ## Measuring and fitting calibration
 
@@ -203,11 +215,11 @@ returns the error of a failed state in its place instead of losing the rest.
 ## Known limits of 0.1.0
 
 - CPU only; no GPU.
-- One model ships (the demo above). Kev checkpoints and models of your own with a "pointer" head
+- One model ships (the default above). Kev checkpoints and models of your own with a "pointer" head
   are not loadable yet; the engine and the head are implemented and tested, the file reader is not.
 - One request at a time per `Jev` (calls from several threads wait their turn).
 - `jev.evaluate`, `jev.calibrate` and `compare` measure a model on **your** labelled data; the
-  default model is a demo of 4 tasks, so they only accept questions that are one of them.
+  declared calibration of the default model holds on the tasks it was trained on, not on yours.
 - **No performance claims are made.** Speed and memory were measured on a single machine during
   development and will be published once they are reproduced on a second one.
 
@@ -221,7 +233,7 @@ repository (they are not part of the wheel) and the default model.
 ![Truth Invaders](https://github.com/ArchAI-Labs/archai-jev/blob/main/docs/assets/truth-invaders.gif?raw=true)
 
 A fact appears at the top of the screen (the *state*) and claims fall like space invaders. For
-each claim the model answers one `YesNo` question of the `entailment` task: if it says *true*, the
+each claim the model answers one `YesNo` question ("is this statement supported by the text?"): if it says *true*, the
 invader lands; if it says *false*, the cannon shoots it. Wrong calls and slow decisions cost base
 blocks, and the waves speed up, so the game shows how many decisions per second the model takes. The
 HUD shows the measured latency, decisions per second and accuracy live on your machine.
@@ -231,8 +243,8 @@ python demos/000_truth_invaders.py                # play (SPACE starts, ESC quit
 python demos/000_truth_invaders.py --headless     # no window: accuracy and latency on all claims
 ```
 
-It uses only the standard library (`tkinter`) and `archai_jev`. Like every use of the default
-model it is a demo: the model can be wrong, and the game says so on its game over screen.
+It uses only the standard library (`tkinter`) and `archai_jev`. The model can be wrong, and the
+game says so on its game over screen.
 
 ### `001` to `007`: one concept per script
 
@@ -241,9 +253,9 @@ the standard library and `archai_jev`, and print what they measure on your machi
 
 | Script | What it shows |
 |---|---|
-| `001_quickstart_four_tasks.py` | the four tasks, typed answers (`value`, `probabilities`, `confidence`), several questions in one `ask` |
-| `002_grounding_check.py` | `entailment` as a fact checker: is each sentence of an answer supported by its source? |
-| `003_duplicate_finder.py` | `similarity` to group duplicate tickets, and why comparing every pair is expensive |
+| `001_quickstart.py` | `Choice` and `YesNo`, typed answers (`value`, `probabilities`, `confidence`), several questions in one `ask`, a request the model refuses |
+| `002_grounding_check.py` | a `YesNo` question as a fact checker: is each sentence of an answer supported by its source? |
+| `003_duplicate_finder.py` | a `YesNo` question to group duplicate tickets, and why comparing every pair is expensive |
 | `004_never_wrong_probabilities.py` | every error the library raises on purpose, and how to catch it |
 | `005_calibration_lab.py` | what `temperature=` does to probabilities (and that it never changes the decision) |
 | `006_async_stream.py` | `ask_many`, `aask_many` and `asyncio`: the event loop stays free while the model decides |

@@ -88,6 +88,10 @@ pub struct ModelData {
     pub max_context: u64,
     /// Ids of the declared tasks, if the model has a closed task set.
     pub tasks: Option<Vec<String>>,
+    /// The most options of a question the head answers (`None`: no limit of its own).
+    pub max_options: Option<u64>,
+    /// The most tokens of an option key (only for a head that scores keys).
+    pub max_key_tokens: Option<u64>,
     /// Notice for the user.
     pub notice: Option<String>,
     /// `registry` or `local`.
@@ -315,7 +319,7 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
     let tokenizer_path = by_entry(&manifest.tokenizer.file).unwrap_or_default();
     let head_path = match &manifest.head {
         HeadSpec::Pointer { weights, .. } => by_entry(weights),
-        HeadSpec::Letters { .. } => None,
+        HeadSpec::Letters { .. } | HeadSpec::KeyLogProb { .. } => None,
     };
     // `originals_verified` says whether the SHA-256 of every original file was already checked
     // in this call (it is done before a conversion starts, and not twice).
@@ -545,6 +549,8 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
             .map(|t| t.iter().map(|x| x.id.clone()).collect()),
         notice: manifest.notice.clone(),
         variants: variants_of(&manifest),
+        max_options: manifest.head.max_options(),
+        max_key_tokens: manifest.head.max_key_tokens(),
         source: match target {
             Target::Registry(_) => "registry",
             Target::Local { .. } => "local",

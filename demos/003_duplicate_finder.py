@@ -2,7 +2,7 @@
 
 What you will learn
 -------------------
-* how to use the ``similarity`` task to compare two texts,
+* how to use a ``YesNo`` question to compare two texts,
 * how to turn pairwise probabilities into groups (a tiny clustering),
 * why comparing every pair is expensive (the cost grows with the SQUARE of the list),
 * that similarity answers are not perfectly symmetric.
@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import time
 
-from _common import SIMILARITY_CRITERIA, section, show_download_progress, title
+from _common import section, show_download_progress, title
 
 from archai_jev import Jev, YesNo
 
@@ -50,6 +50,11 @@ TICKETS = [
 THRESHOLD = 0.5  # P(same meaning) at or above this counts as "duplicate"
 
 
+def same_meaning(other: str) -> YesNo:
+    """The question "does the state mean the same as ``other``?"."""
+    return YesNo(f"Does this ticket mean the same as: {other}")
+
+
 def find(parent: list[int], i: int) -> int:
     """Union-find: the representative of the group that ticket ``i`` belongs to."""
     while parent[i] != i:
@@ -67,16 +72,15 @@ def main() -> None:
     # ----------------------------------------------------------------------------------
     # Ask about every pair (i, j) with i < j.
     #
-    # For the similarity task the state is the FIRST text and the question's first
-    # argument is the SECOND text. So for ticket i we send ONE ask() with a question per
-    # ticket j > i. That is n - 1 calls and n * (n - 1) / 2 questions in total.
+    # The state is the FIRST text and the question carries the SECOND text. So for
+    # ticket i we send ONE ask() with a question per ticket j > i, and the model reads
+    # ticket i only once for all of them. That is n - 1 calls and n * (n - 1) / 2
+    # questions in total.
     # ----------------------------------------------------------------------------------
     probability: dict[tuple[int, int], float] = {}
     started = time.perf_counter()
     for i in range(n - 1):
-        questions = {
-            f"t{j}": YesNo(TICKETS[j][1], SIMILARITY_CRITERIA) for j in range(i + 1, n)
-        }
+        questions = {f"t{j}": same_meaning(TICKETS[j][1]) for j in range(i + 1, n)}
         answers = jev.ask(TICKETS[i][1], questions)
         for j in range(i + 1, n):
             probability[(i, j)] = answers.yes_nos[f"t{j}"].probability
@@ -151,7 +155,7 @@ def main() -> None:
     section("Is it symmetric? (the first pair, both directions)")
     first, second = TICKETS[0][1], TICKETS[1][1]
     forward = probability[(0, 1)]
-    backward = jev.ask(second, {"q": YesNo(first, SIMILARITY_CRITERIA)})
+    backward = jev.ask(second, {"q": same_meaning(first)})
     print(f"  A -> B: {forward:.1%}    B -> A: {backward.yes_nos['q'].probability:.1%}")
 
 

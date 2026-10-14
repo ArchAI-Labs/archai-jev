@@ -1,0 +1,31 @@
+{
+ "purpose": "Golden of the v2 model for the parity tests of the prompt (ids), of the option keys (ids) and of the engine (scores).",
+ "inputs": "Written by the archai-jev authors: states, instructions and options of every shape the Decision Index format allows (string, dict, list, empty and unicode states; structured instructions and descriptions; 2-6 options; keys of 1-4 tokens).",
+ "outputs": "Reference engine of the Decision Index kit: prompt ids, key token ids, option scores (sum of the full-vocabulary log-probabilities of the key tokens) and probabilities.",
+ "model": {
+  "repo": "nickprock/archai-jev-qwen-1.5b",
+  "revision": "7730248dc1b411f594ec88c657d26285decb3cb9"
+ },
+ "weights": "the published fp16 merge (model.safetensors, sha256 aacabf86b65107b9512a29aa74bda36f6a593ea11686698128ced14cd2de193e)",
+ "kit": {
+  "repo": "Decision Index",
+  "commit": "9eb2dbe2a358004c8782c66e40a83ac07b953fec",
+  "licence": "MIT"
+ },
+ "stack": {
+  "torch": "2.14.0+cpu",
+  "transformers": "5.17.0",
+  "device": "cpu",
+  "dtype": "float32",
+  "prefix_cache": false
+ },
+ "requests": 77,
+ "questions": 87,
+ "file_sha256": {
+  "golden.jsonl": {
+   "sha256": "50b0d93f90b351e1a47c2290a66144d152dc01d85704684a6eef8d1854593563",
+   "size": 85146
+  }
+ },
+ "regenerate": "spec/playground/s10-quantization/t9/make_v2_golden.py (local, not versioned): <S1 venv> make_v2_golden.py MERGED_DIR OUT_DIR"
+}

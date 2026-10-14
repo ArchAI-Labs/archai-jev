@@ -33,6 +33,8 @@ pub struct Stats {
     pub rows: usize,
     /// Tokens decoded: state once per session plus every branch (and every `extend`).
     pub decoded_tokens: usize,
+    /// Tokens decoded after the prompt to score option keys of more than one token (spec 010).
+    pub continuation_tokens: usize,
     /// Output positions read.
     pub outputs: usize,
     /// The full row (state + branch) of every row, in order.
@@ -65,6 +67,7 @@ pub struct Faults {
 /// The fake model.
 pub struct FakeForward {
     dim: usize,
+    vocab: u32,
     sensitive: bool,
     thread_sensitive: bool,
     pool: SlotPool,
@@ -107,6 +110,7 @@ impl FakeForward {
     pub fn new(dim: usize) -> Self {
         FakeForward {
             dim,
+            vocab: 64,
             sensitive: false,
             thread_sensitive: false,
             pool: SlotPool::new(1, 1),
@@ -114,6 +118,14 @@ impl FakeForward {
             stats: Mutex::new(Stats::default()),
             faults: Mutex::new(Faults::default()),
         }
+    }
+
+    /// The size of the vocabulary over which the log-probabilities of
+    /// [`OutputSpec::KeyLogProbs`] are normalised (64 by default).
+    #[must_use]
+    pub fn with_vocab(mut self, vocab: u32) -> Self {
+        self.vocab = vocab.max(1);
+        self
     }
 
     /// Make the numbers depend on how each row was split into decodes.
@@ -181,6 +193,33 @@ impl FakeForward {
     /// was decoded in decodes of `sizes` tokens.
     pub fn hidden_split(&self, prefix: &[u32], sizes: &[usize]) -> Vec<f32> {
         self.hidden_with(prefix, self.salt(sizes))
+    }
+
+    /// The log-probability of the token `id` after `prefix`, normalised over the vocabulary of
+    /// the fake (ids `0..vocab`), and `salt` the way the other numbers are.
+    fn log_prob_with(&self, prefix: &[u32], id: u32, salt: u64) -> f64 {
+        let logits: Vec<f64> = (0..self.vocab)
+            .map(|t| f64::from(self.logit_with(prefix, t, salt)))
+            .collect();
+        let top = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let log_z = top + logits.iter().map(|v| (v - top).exp()).sum::<f64>().ln();
+        f64::from(self.logit_with(prefix, id, salt)) - log_z
+    }
+
+    /// The sum of the log-probabilities of the tokens of `key` as the continuation of `prefix`
+    /// (exposed so a test can compute the expected score by hand, token by token).
+    pub fn key_log_prob_of(&self, prefix: &[u32], key: &[u32]) -> f64 {
+        self.key_log_prob_with(prefix, key, 0)
+    }
+
+    fn key_log_prob_with(&self, prefix: &[u32], key: &[u32], salt: u64) -> f64 {
+        let mut context = prefix.to_vec();
+        let mut total = 0.0;
+        for &token in key {
+            total += self.log_prob_with(&context, token, salt);
+            context.push(token);
+        }
+        total
     }
 
     fn salt(&self, sizes: &[usize]) -> u64 {
@@ -273,6 +312,26 @@ impl FakeSession<'_> {
                     out.push(Output::Logits(
                         ids.iter()
                             .map(|&id| self.owner.logit_with(prefix, id, salt))
+                            .collect(),
+                    ));
+                }
+                OutputSpec::KeyLogProbs { position, keys } => {
+                    if keys.iter().any(Vec::is_empty) {
+                        return Err(Error::Inference {
+                            detail: "a key without tokens cannot be scored".to_string(),
+                        });
+                    }
+                    if base + position + 1 != full.len() {
+                        return Err(Error::Inference {
+                            detail: "keys are scored after the last token of the row".to_string(),
+                        });
+                    }
+                    let prefix = full.get(..=base + position).unwrap_or(&full);
+                    self.owner.stats.lock().unwrap().continuation_tokens +=
+                        keys.iter().map(|k| k.len() - 1).sum::<usize>();
+                    out.push(Output::KeyLogProbs(
+                        keys.iter()
+                            .map(|key| self.owner.key_log_prob_with(prefix, key, salt))
                             .collect(),
                     ));
                 }

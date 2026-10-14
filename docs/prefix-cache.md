@@ -1,8 +1,8 @@
 # What is reused between questions (the prefix cache)
 
-A prompt for the default model has a part that does not depend on your text (the fixed block of
-the task: the instructions and the answer options) and, for `entailment` and `similarity`, a part
-that you send once and ask about many times (the state). `archai-jev` computes each of these parts
+A prompt for the default model has a part that does not depend on your text (the system block and
+the `State:` header) and a part that you send once and ask about many times (the state).
+`archai-jev` computes each of these parts
 once and keeps the result in memory, so asking ten questions about one source, or many short
 messages of the same task, costs much less than ten independent calls.
 
@@ -10,8 +10,8 @@ messages of the same task, costs much less than ten independent calls.
 
 - **Inside one call**: the questions of an `ask` share the fixed block and, when the template puts
   the state first, the state. They are computed once for the whole call.
-- **Between calls** (in memory, in the same process, per loaded model): the fixed block of every
-  task, and a state that is asked about again (it is kept the second time it is seen, or at once
+- **Between calls** (in memory, in the same process, per loaded model): the fixed block, and a
+  state that is asked about again (it is kept the second time it is seen, or at once
   when two questions of one call share it).
 
 Nothing is written to disk and nothing is shared between models: a saved prefix is only used by the
@@ -23,7 +23,8 @@ Reusing does not change an answer *because of the cache*: with the memory empty,
 numbers are identical bit for bit. What differs from 0.1.0 is that every prompt is computed in
 segments (at the end of the fixed block and of the state) instead of in one pass; the numbers move
 by the usual rounding of the order of calculation, within the tolerances in the spec: for the default
-model the largest difference measured was 0.48 on a raw logit and 0.033 on a probability. Set
+model the largest difference measured between the two ways of computing was 0.043 on a probability
+(23 requests, Q8_0). Set
 `prefix_cache_mib=0` to get the computation of 0.1.0 back.
 
 ## Control
@@ -44,9 +45,9 @@ limit is reached the least recently used prefix goes first.
 
 - Many questions about one text in one call or in a stream of calls (grounding checks, duplicate
   finders): the largest gain.
-- Many short messages of the same task: the fixed block is skipped each time.
-- A single question about a new text of a task never seen: nothing to reuse, and a little more work
-  than before (the prefix is saved for next time).
+- Many short messages with the same question: the fixed block is skipped each time.
+- A single question about a new text: nothing to reuse, and a little more work than before (the
+  prefix is saved for next time).
 
 Speed depends on the machine. After the CPU has been idle it runs slower for the first requests, so
 a call after a pause is slower than the same call in a series; measure both ways before comparing.

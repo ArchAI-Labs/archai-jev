@@ -149,7 +149,7 @@ impl Template for ChatMlLetters {
 
 /// Where a cut goes in the row: after `prefix`, which must be the first tokens of `full` (the
 /// user text, starting at `offset` in the row) and leave something after it.
-fn prefix_cut(full: &[u32], prefix: &[u32], offset: usize) -> Option<usize> {
+pub(super) fn prefix_cut(full: &[u32], prefix: &[u32], offset: usize) -> Option<usize> {
     (!prefix.is_empty() && prefix.len() < full.len() && full.starts_with(prefix))
         .then_some(offset + prefix.len())
 }

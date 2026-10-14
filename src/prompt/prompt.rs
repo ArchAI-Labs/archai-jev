@@ -33,6 +33,7 @@ pub struct Branch {
     decide: usize,
     option_ends: Vec<usize>,
     cuts: Vec<Cut>,
+    keys: Vec<Vec<u32>>,
 }
 
 impl Branch {
@@ -53,7 +54,21 @@ impl Branch {
             decide,
             option_ends,
             cuts,
+            keys: Vec::new(),
         }
+    }
+
+    /// The token ids of each option key, in option order (spec 010): what a key-scoring head
+    /// reads as the continuation of the branch. Empty for the templates that do not use keys.
+    #[must_use]
+    pub(crate) fn with_keys(mut self, keys: Vec<Vec<u32>>) -> Self {
+        self.keys = keys;
+        self
+    }
+
+    /// The token ids of each option key, in option order (empty if the template has none).
+    pub fn keys(&self) -> &[Vec<u32>] {
+        &self.keys
     }
 
     /// The cut points of the branch, as positions inside the branch.

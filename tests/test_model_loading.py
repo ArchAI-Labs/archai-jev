@@ -110,11 +110,12 @@ def test_list_models_is_static_and_marks_the_default() -> None:
     assert len(defaults) == 1
     d = defaults[0]
     assert d.name == "nickprock/archai-jev-qwen-1.5b"
-    assert d.family == "qwen2-letters" and d.head == "letters"
-    assert d.tasks == ("safety", "intent", "entailment", "similarity")
-    assert d.calibrated is True and d.temperature == pytest.approx(2.09)
-    assert d.notice and "demo" in d.notice.lower()
-    assert d.license == "Apache-2.0" and d.max_context == 512
+    assert d.family == "qwen2-keys" and d.head == "key_logprob"
+    assert d.tasks is None  # any Choice or YesNo, not a closed set
+    assert d.calibrated is True and d.temperature == pytest.approx(1.7497)
+    assert d.notice and "overconfident" in d.notice
+    assert d.license == "Apache-2.0" and d.max_context == 768
+    assert d.revision is not None and d.revision.startswith("7730248d")
     assert list_models() == models  # deterministic
 
 
@@ -126,7 +127,7 @@ def test_list_models_reports_the_variants_of_each_model() -> None:
             dtype="q8_0",
             size_bytes=1_646_572_736,
             calibrated=True,
-            temperature=2.09,
+            temperature=1.7497,
             is_default=True,
         ),
     )
@@ -136,6 +137,23 @@ def test_list_models_reports_the_variants_of_each_model() -> None:
     # converted at first use: the size of the result is not known before that
     assert all(v.size_bytes is None and v.calibrated for v in kev.variants)
     assert [v.is_default for v in kev.variants] == [True, False]
+
+
+def test_list_models_reports_the_limits_of_each_head() -> None:
+    by_name = {m.name: m for m in list_models()}
+    # the default scores the keys of up to 8 options, of up to 4 tokens each
+    default = by_name["nickprock/archai-jev-qwen-1.5b"]
+    assert (default.max_options, default.max_key_tokens) == (8, 4)
+    # a pointer head has no limit of its own
+    kev = by_name["jaredpalmer/kev-0.8b"]
+    assert (kev.max_options, kev.max_key_tokens) == (None, None)
+
+
+def test_the_test_scorer_has_no_limits() -> None:
+    from archai_jev.testing import MockScorer
+
+    info = Jev.from_scorer(MockScorer()).model_info
+    assert (info.max_options, info.max_key_tokens) == (None, None)
 
 
 def test_variant_info_is_immutable_hashable_and_picklable() -> None:

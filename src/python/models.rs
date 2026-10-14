@@ -146,6 +146,8 @@ fn info_dict<'py>(py: Python<'py>, d: &ModelData) -> PyResult<Bound<'py, PyDict>
     out.set_item("tasks", d.tasks.clone())?;
     out.set_item("notice", d.notice.as_deref())?;
     out.set_item("variants", variants_dicts(py, &d.variants)?)?;
+    out.set_item("max_options", d.max_options)?;
+    out.set_item("max_key_tokens", d.max_key_tokens)?;
     Ok(out)
 }
 
@@ -265,6 +267,7 @@ fn listed<'py>(py: Python<'py>, registry: &Registry, m: &Manifest) -> PyResult<B
         "head",
         match &m.head {
             HeadSpec::Letters { .. } => "letters",
+            HeadSpec::KeyLogProb { .. } => "key_logprob",
             HeadSpec::Pointer { .. } => "pointer",
         },
     )?;
@@ -291,16 +294,24 @@ fn listed<'py>(py: Python<'py>, registry: &Registry, m: &Manifest) -> PyResult<B
     out.set_item("notice", m.notice.as_deref())?;
     out.set_item("is_default", registry.is_default(m))?;
     out.set_item("variants", variants_dicts(py, &variants_of(m))?)?;
+    out.set_item("max_options", m.head.max_options())?;
+    out.set_item("max_key_tokens", m.head.max_key_tokens())?;
     Ok(out)
 }
 
-/// The models of the registry, as plain dictionaries (static data: no network, no disk).
+/// The models of the registry, as plain dictionaries (static data: no network, no disk): one per
+/// name, at its current revision (the others are reached with `revision=`).
 #[pyfunction]
 pub fn list_models(py: Python<'_>) -> PyResult<Vec<Bound<'_, PyDict>>> {
     let registry = Registry::builtin().map_err(Error::IncompatibleModel)?;
     registry
-        .entries()
+        .names()
         .iter()
-        .map(|m| listed(py, registry, m))
+        .map(|name| {
+            let current = registry
+                .resolve(name, None)
+                .map_err(Error::IncompatibleModel)?;
+            listed(py, registry, current)
+        })
         .collect()
 }

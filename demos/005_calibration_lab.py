@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import gc
 
-from _common import ENTAILMENT_CRITERIA, section, show_download_progress, title
+from _common import section, show_download_progress, title
 
 from archai_jev import Jev, YesNo, calibrated_softmax
 
@@ -126,7 +126,7 @@ def evaluate(jev: Jev) -> tuple[float, float, float, list[bool]]:
     confidences: list[float] = []
     squared_errors: list[float] = []
     for premise, claim, label in CLAIMS:
-        question = {"claim": YesNo(claim, ENTAILMENT_CRITERIA)}
+        question = {"claim": YesNo(f"Is this statement supported by the text? {claim}")}
         p_yes = jev.ask(premise, question).yes_nos["claim"].probability
         decisions.append(p_yes >= 0.5)
         confidences.append(max(p_yes, 1.0 - p_yes))
@@ -148,7 +148,7 @@ def main() -> None:
     # option always stays the most probable one.
     # ----------------------------------------------------------------------------------
     section("1. The same two scores [3.0, 1.0] at different temperatures")
-    for temperature in (0.5, 1.0, 2.09, 4.0, 10.0):
+    for temperature in (0.5, 1.0, 1.75, 4.0, 10.0):
         probabilities = calibrated_softmax([3.0, 1.0], temperature)
         print(f"  T = {temperature:5.2f}   P(first) = {probabilities[0]:6.1%}")
     print("  (T < 1 sharpens, T > 1 flattens; the order never changes)")

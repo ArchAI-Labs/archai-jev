@@ -6,6 +6,7 @@ pub mod chatml;
 mod chatml_cuts_tests;
 #[cfg(test)]
 mod chatml_tests;
+pub mod di;
 pub mod kev;
 pub mod limits;
 #[allow(clippy::module_inception)]
