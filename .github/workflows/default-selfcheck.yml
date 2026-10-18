@@ -68,6 +68,11 @@ jobs:
           uv venv .pyo3
           if [ -x .pyo3/bin/python ]; then PY="$PWD/.pyo3/bin/python"; else PY="$PWD/.pyo3/Scripts/python.exe"; fi
           echo "PYO3_PYTHON=$PY" >> "$GITHUB_ENV"
+          # The test binary links libpython (PyO3). The Python of uv is a standalone build whose shared library
+          # is not on the loader path (Linux ARM: "libpython3.13.so.1.0: cannot open shared object file").
+          LIBDIR="$("$PY" -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR") or "")')"
+          if [ -n "$LIBDIR" ] && [ "$RUNNER_OS" = "Linux" ]; then echo "LD_LIBRARY_PATH=$LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"; fi
+          if [ -n "$LIBDIR" ] && [ "$RUNNER_OS" = "macOS" ]; then echo "DYLD_FALLBACK_LIBRARY_PATH=$LIBDIR" >> "$GITHUB_ENV"; fi
       - name: Cache the model file
         id: gguf
         uses: actions/cache@v5
