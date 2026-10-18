@@ -219,7 +219,8 @@ Environment variables: `ARCHAI_JEV_CACHE`, `ARCHAI_JEV_OFFLINE` / `HF_HUB_OFFLIN
 
 The part of a prompt that questions share is computed once and kept in memory (see
 [docs/prefix-cache.md](docs/prefix-cache.md)): `Jev.from_pretrained(prefix_cache_mib=0)` turns it off,
-`jev.cache_info()` shows what it holds.
+`jev.cache_info()` shows what it holds. The weights formats the library accepts, and why the 4-bit
+variant we measured is not among them, are in [docs/quantization.md](docs/quantization.md).
 
 `Ctrl-C` stops a running `ask`/`ask_many` at the next row of the model, and cancelling an `aask`
 stops its work (see [docs/concurrency.md](docs/concurrency.md)); `ask_many(..., return_exceptions=True)`

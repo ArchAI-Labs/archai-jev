@@ -1,19 +1,20 @@
-# Manual job (spec 009, T14): do the vectors that the engine recorded on the Q4_K_M file of the default
-# model reproduce on the other platforms? Each platform downloads the exact file (SHA-256 checked),
-# runs the 12 recorded requests, and reports the largest difference in probability from the recorded
-# numbers. `tol_p` of the variant is set from the largest of these (at least twice, at most 0.05).
+# Manual job (spec 009, D60): does the self-check of the DEFAULT model pass on every platform? Each platform
+# downloads the published Q8_0 file of the registry entry (SHA-256 checked), runs the 16 vectors of its
+# manifest (expected numbers from the reference engine in full precision) the way the library does at load,
+# and reports the largest difference of probability against the tolerance of the library (0.1).
+# The same test run on the Q4_K_M of the v2 gave 0.08-0.14 between platforms and kept it out of the registry.
 #
-# It is not part of CI: it downloads ~1 GB per platform. The "Run workflow" button only exists for workflows
+# It is not part of CI: it downloads 1.6 GB per platform. The "Run workflow" button only exists for workflows
 # on the default branch, so it also starts once when this file is pushed to develop; remove that trigger
 # (the `push:` block) when the measurement is in the report.
-name: Quantized vectors
+name: Default self-check
 
 on:
   workflow_dispatch:
   push:
     branches: [develop]
     paths:
-      - .github/workflows/quantized-vectors.yml
+      - .github/workflows/default-selfcheck.yml
 
 permissions:
   contents: read
@@ -22,9 +23,9 @@ env:
   CARGO_TERM_COLOR: always
   # Same pin as CI.yml.
   RUST_VERSION: "1.99.1"
-  # The file under test: repository, revision and SHA-256 of the published Q4_K_M.
-  GGUF_URL: https://huggingface.co/nickprock/archai-jev-qwen-1.5b/resolve/0dbce0f4538e13ccf3b09fb144b6d5f0b92aebe5/archai-jev-qwen1.5b-q4_k_m.gguf
-  GGUF_SHA256: 0f768dbb6978f19e24779faf4a8963e7258148e02544a9aa5733b3c686ad1f86
+  # The file under test: the Q8_0 of the registry entry (repository, revision and SHA-256 as in the manifest).
+  GGUF_URL: https://huggingface.co/nickprock/archai-jev-qwen-1.5b/resolve/7730248dc1b411f594ec88c657d26285decb3cb9/archai-jev-qwen1.5b-q8.gguf
+  GGUF_SHA256: 5dfad79eba479688fbd4bc5b43dd8279aeb5a49259f73a0a3f330b38790aa809
   TOKENIZER_URL: https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/989aa7980e4cf806f80c7fef2b1adb7bc71aa306/tokenizer.json
   TOKENIZER_SHA256: c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539
 
@@ -37,7 +38,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: linux-x86_64, runner: ubuntu-latest }
+          - { name: linux-x86_64, runner: ubuntu-24.04 }
           - { name: linux-aarch64, runner: ubuntu-24.04-arm }
           - { name: macos-arm64, runner: macos-latest }
           - { name: macos-x86_64, runner: macos-15-intel }
@@ -71,29 +72,29 @@ jobs:
         id: gguf
         uses: actions/cache@v5
         with:
-          path: q4_k_m.gguf
-          key: q4_k_m-${{ env.GGUF_SHA256 }}
+          path: model.gguf
+          key: q8_0-${{ env.GGUF_SHA256 }}
       - name: Download the model file
         if: steps.gguf.outputs.cache-hit != 'true'
-        run: curl -fL --retry 4 --retry-delay 10 -o q4_k_m.gguf "$GGUF_URL"
+        run: curl -fL --retry 4 --retry-delay 10 -o model.gguf "$GGUF_URL"
       - name: Download the tokenizer
         run: curl -fL --retry 4 --retry-delay 5 -o tokenizer.json "$TOKENIZER_URL"
       - name: Check the files
         run: |
-          printf '%s\n' "$GGUF_SHA256  q4_k_m.gguf" "$TOKENIZER_SHA256  tokenizer.json" > files.sha256
+          printf '%s\n' "$GGUF_SHA256  model.gguf" "$TOKENIZER_SHA256  tokenizer.json" > files.sha256
           if command -v sha256sum >/dev/null; then sha256sum -c files.sha256; else shasum -a 256 -c files.sha256; fi
-      - name: Reproduce the recorded vectors
+      - name: Run the self-check of the default model
         run: |
           export ARCHAI_JEV_TEST_DEFAULT_TOKENIZER="$PWD/tokenizer.json"
-          export ARCHAI_JEV_TEST_V2_GGUF="$PWD/q4_k_m.gguf"
-          cargo test --release --features testing --test quantized_vectors the_recorded_vectors_reproduce -- --include-ignored --nocapture 2>&1 | tee reproduce.log
+          export ARCHAI_JEV_TEST_V2_GGUF="$PWD/model.gguf"
+          cargo test --release --features testing --test quantized_vectors the_selfcheck_of_the_default -- --include-ignored --nocapture 2>&1 | tee reproduce.log
       - name: Report
         if: always()
         run: |
           {
             echo "### ${{ matrix.name }}"
             echo '```'
-            grep -E "max \|dp\| =|CROSS_PLATFORM|test result" reproduce.log || echo "no result (see the log)"
+            grep -E "max \|dp\| =|SELFCHECK_DEFAULT|test result" reproduce.log || { echo "no result; last lines of the log:"; tail -n 40 reproduce.log; }
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the log

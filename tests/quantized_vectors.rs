@@ -1,5 +1,7 @@
 //! The self-check vectors of a quantised variant, recorded by the engine on the very file
-//! (spec 009, section 4), and what they are worth.
+//! (spec 009, section 4), and what they are worth. The Q4_K_M of the v2 was NOT admitted because
+//! of the numbers these tests print on other platforms (D60); they stay as the evidence and as the
+//! way to measure the next candidate.
 //!
 //! Three steps, all by hand (T2, `#[ignore]`) because they need the GGUF of the variant:
 //!
@@ -283,4 +285,90 @@ fn the_plain_path_and_the_segmented_path_agree() {
         worst = worst.max(d);
     }
     println!("plain vs segmented: largest |dp| = {worst:.6}");
+}
+
+/// What the self-check of the **default model** does at load, on this platform: the 16 vectors of
+/// its registry entry (expected numbers from the reference engine in full precision) run through
+/// the engine on the published Q8_0 file, in the segments of the template's cuts, with the
+/// tolerance of the library's table. Prints the largest difference of probability at the declared
+/// temperature (the quantity the check compares) and fails if it is beyond the tolerance.
+#[test]
+#[ignore = "needs the Q8_0 GGUF of the default model: set ARCHAI_JEV_TEST_V2_GGUF"]
+fn the_selfcheck_of_the_default_passes_on_this_platform() {
+    use _core::models::tolerance::{Reference, lookup};
+    let Some(inp) = inputs() else { return };
+    let text = std::fs::read_to_string(registry_manifest()).unwrap();
+    let manifest = parse(text.as_bytes()).unwrap();
+    let Some(Json::Array(variants)) = manifest.get("variants") else {
+        panic!("variants")
+    };
+    let variant = variants
+        .iter()
+        .find(|v| matches!(v.get("dtype"), Some(Json::Str(d)) if d == "q8_0"))
+        .unwrap();
+    let number = |j: &Json| match j {
+        Json::Float(f) => *f,
+        Json::Int(i) => *i as f64,
+        other => panic!("not a number: {other:?}"),
+    };
+    let temperature = number(
+        variant
+            .get("calibration")
+            .unwrap()
+            .get("temperature")
+            .unwrap(),
+    );
+    let Some(Json::Array(vectors)) = variant.get("selfcheck").and_then(|s| s.get("vectors")) else {
+        panic!("vectors")
+    };
+    let tolerance = lookup("qwen2-keys", "q8_0", Reference::FullPrecision)
+        .unwrap()
+        .p;
+    let scorer = scorer(&inp.gguf, &inp.tokenizer, machine_threads());
+    let mut worst = 0.0f64;
+    for vector in vectors {
+        let Some(Json::Str(id)) = vector.get("id") else {
+            panic!("id")
+        };
+        let request = vector.get("request").unwrap();
+        let expected = vector.get("expected").unwrap();
+        let (state, qs) = request_to_domain(request).unwrap();
+        let run = scorer.run(&state, &qs).unwrap();
+        let Some(Json::Array(want_ids)) = expected.get("input_ids") else {
+            panic!("input_ids")
+        };
+        let want_ids: Vec<u32> = want_ids
+            .iter()
+            .map(|v| u32::try_from(number(v) as i64).unwrap())
+            .collect();
+        assert_eq!(run.input_ids, want_ids, "{id}: the prompt ids differ");
+        let Some(Json::Object(questions)) = expected.get("questions") else {
+            panic!("questions")
+        };
+        for ((name, got), (want_name, want)) in run.questions.iter().zip(questions) {
+            assert_eq!(name, want_name, "{id}");
+            let Some(Json::Array(want_p)) = want.get("probabilities") else {
+                panic!("probabilities")
+            };
+            let want_p: Vec<f64> = want_p.iter().map(number).collect();
+            let p = calibrated_softmax(got, temperature).unwrap();
+            let d = p
+                .iter()
+                .zip(&want_p)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f64::max);
+            println!("{id}: max |dp| = {d:.6}");
+            worst = worst.max(d);
+        }
+    }
+    println!(
+        "SELFCHECK_DEFAULT os={} arch={} vectors={} max_dp={worst:.6} tolerance={tolerance}",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        vectors.len()
+    );
+    assert!(
+        worst <= tolerance,
+        "{worst} is beyond the tolerance {tolerance}"
+    );
 }

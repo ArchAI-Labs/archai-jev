@@ -33,6 +33,19 @@ def test_the_real_registry_agrees_with_the_archived_report() -> None:
     assert gate.lint_registry(registry_manifests(), report) == []
 
 
+def test_the_archived_report_keeps_the_q4_k_m_out_for_one_reason() -> None:
+    # D60: the Q4_K_M of the v2 passed the quality and advantage criteria (G1-G4) and was refused by the
+    # self-check (G5): the engine's numbers differ between platforms by up to 0.137 in probability, and a
+    # check that tolerant (at least 0.27) would notice almost nothing. Its GGUF is not in the registry.
+    report = json.loads(REPORT.read_text(encoding="utf-8"))
+    result = gate.evaluate_gate(report, "q4_k_m")
+    assert not result.passed
+    assert [name for name, check in result.checks.items() if not check.passed] == ["G5"]
+    assert "platform" in result.checks["G5"].detail
+    for m in registry_manifests():
+        assert all(v["dtype"] != "q4_k_m" for v in m["variants"])
+
+
 def test_zero_candidates_is_green() -> None:
     manifests = registry_manifests()
     # the baseline q8_0 of the default and the full-precision variants of Kev are not candidates
