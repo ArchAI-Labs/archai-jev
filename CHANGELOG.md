@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declares one, it says that temperature does not transfer. An unknown `dtype` lists the
   supported names (`"int8"` is pointed to `"q8_0"`), and a weights file whose tensor types do not
   fit its declared `dtype` is refused with the tensor, the expected type and the type found.
+- **Weights formats and quantization guide** (`docs/quantization.md`): which `dtype` names a release accepts
+  (`f32`, `bf16`, `q8_0`; `float32` and `bfloat16` as synonyms), why a variant enters the registry only after
+  a published gate, and the result for the 4-bit candidate. The Q4_K_M of the default model passed the quality
+  and size criteria (file 0.60 times the Q8_0, accuracy within 0.4 points) but its self-check numbers differ
+  by up to 0.14 in probability between CPUs, so it is **not** offered; the K-quant names are refused with the
+  list of valid names. The self-check of the default model was measured on Linux (x86-64 and ARM), macOS
+  (Intel and Apple Silicon) and Windows: the largest difference from the reference engine is 0.04, against
+  a tolerance of 0.1.
 - **Measure and calibrate a model on your own data** (`archai_jev.evaluation`, plus
   `InvalidDatasetError`), all in Rust and with no new dependency:
   - `load_dataset(path)` reads the JSONL format of Kev (the TypeSafe request plus a `label` per

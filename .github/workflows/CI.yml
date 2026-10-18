@@ -192,7 +192,12 @@ jobs:
               archai_jev.Jev.from_pretrained(offline=True, cache_dir=tempfile.mkdtemp())
               raise SystemExit('the default model must not load from an empty cache')
           except archai_jev.ModelDownloadError as e:
-              print('offline with an empty cache:', str(e)[:80])"
+              print('offline with an empty cache:', str(e)[:80])
+          try:
+              archai_jev.Jev.from_pretrained(dtype='q4_k_m', offline=True, cache_dir=tempfile.mkdtemp())
+              raise SystemExit('a study dtype must not be accepted by a release wheel')
+          except ValueError as e:
+              assert 'q8_0' in str(e), e"
           done
       - name: Upload wheels
         uses: actions/upload-artifact@v6
@@ -240,7 +245,12 @@ jobs:
               archai_jev.Jev.from_pretrained(offline=True, cache_dir=tempfile.mkdtemp())
               raise SystemExit('the default model must not load from an empty cache')
           except archai_jev.ModelDownloadError as e:
-              print('offline with an empty cache:', str(e)[:80])"
+              print('offline with an empty cache:', str(e)[:80])
+          try:
+              archai_jev.Jev.from_pretrained(dtype='q4_k_m', offline=True, cache_dir=tempfile.mkdtemp())
+              raise SystemExit('a study dtype must not be accepted by a release wheel')
+          except ValueError as e:
+              assert 'q8_0' in str(e), e"
           done
       - name: Upload wheels
         uses: actions/upload-artifact@v6
@@ -282,7 +292,12 @@ jobs:
               archai_jev.Jev.from_pretrained(offline=True, cache_dir=tempfile.mkdtemp())
               raise SystemExit('the default model must not load from an empty cache')
           except archai_jev.ModelDownloadError as e:
-              print('offline with an empty cache:', str(e)[:80])"
+              print('offline with an empty cache:', str(e)[:80])
+          try:
+              archai_jev.Jev.from_pretrained(dtype='q4_k_m', offline=True, cache_dir=tempfile.mkdtemp())
+              raise SystemExit('a study dtype must not be accepted by a release wheel')
+          except ValueError as e:
+              assert 'q8_0' in str(e), e"
           done
       - name: Upload wheels
         uses: actions/upload-artifact@v6

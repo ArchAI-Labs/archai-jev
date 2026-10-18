@@ -4,17 +4,13 @@
 # and reports the largest difference of probability against the tolerance of the library (0.1).
 # The same test run on the Q4_K_M of the v2 gave 0.08-0.14 between platforms and kept it out of the registry.
 #
-# It is not part of CI: it downloads 1.6 GB per platform. The "Run workflow" button only exists for workflows
-# on the default branch, so it also starts once when this file is pushed to develop; remove that trigger
-# (the `push:` block) when the measurement is in the report.
+# It is not part of CI: it downloads 1.6 GB per platform. Run it by hand ("Run workflow", once the file is on the
+# default branch) when the default model, the engine or the tolerances change. Measured on 2026-10-18 (D60): all
+# five platforms pass, largest difference 0.039 against the tolerance 0.1.
 name: Default self-check
 
 on:
   workflow_dispatch:
-  push:
-    branches: [develop]
-    paths:
-      - .github/workflows/default-selfcheck.yml
 
 permissions:
   contents: read
