@@ -34,11 +34,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
         python: ["3.13"]
         include:
           # Oldest supported Python.
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             python: "3.10"
     defaults:
       run:
@@ -137,7 +137,15 @@ jobs:
       - name: Stub matches compiled module
         run: uv run --no-sync python -m mypy.stubtest archai_jev._core
       - name: Python tests
-        run: uv run --no-sync pytest
+        run: uv run --no-sync pytest -ra --tb=short -p no:cacheprovider 2>&1 | tee pytest.log
+      # The log of a job cannot be read without being logged in to GitHub; an annotation can. Say which tests failed.
+      - name: Name the failed tests
+        if: failure()
+        run: |
+          if [ -f pytest.log ]; then
+            { echo '### Failed tests'; echo '```'; grep -E '^(FAILED|ERROR) ' pytest.log | head -40; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            grep -E '^(FAILED|ERROR) ' pytest.log | head -20 | while IFS= read -r line; do echo "::error title=pytest::${line:0:300}"; done
+          fi
 
   linux:
     # aarch64 builds on a native ARM runner so its wheel can be smoke-tested too.
@@ -147,7 +155,7 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          - runner: ubuntu-latest
+          - runner: ubuntu-24.04
             target: x86_64
           - runner: ubuntu-24.04-arm
             target: aarch64
@@ -283,7 +291,7 @@ jobs:
           path: dist
 
   sdist:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6

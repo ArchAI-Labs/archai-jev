@@ -263,12 +263,14 @@ def test_gil_released_during_fit() -> None:
     finally:
         stop.set()
         thread.join()
-    # Measured on the development machine: a fit that releases the GIL gets ~80% of the ticks
-    # an idle process would (19 of 23 in 0.24 s); a call that holds it, like sorting 3 million
-    # floats, gets ~3% (3 in 0.85 s). The reading of the input holds the GIL, hence not 100%.
+    # A fit that releases the GIL gets ~80% of the ticks an idle process would on the development
+    # machine (19 of 23 in 0.24 s) and ~18% on a slow shared CI runner (macOS: 10 in 0.54 s); a call
+    # that holds it all along, like sorting 3 million floats, gets ~3% (3 in 0.85 s). The reading of
+    # the input holds the GIL before the computation starts, and on a slow machine that part is a
+    # larger share of the call, so the bar sits between the two regimes, not near the fast one.
     assert elapsed >= 0.05
     assert ticks >= max(
-        3, 0.3 * elapsed / 0.01
+        3, 0.1 * elapsed / 0.01
     ), f"only {ticks} ticks in {elapsed:.3f} s: the GIL was held"
 
 
