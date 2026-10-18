@@ -438,7 +438,7 @@ mod tests {
         assert!(matches!(
             v2.head,
             HeadSpec::KeyLogProb {
-                max_options: 8,
+                max_options: 20,
                 max_key_tokens: 4,
                 ..
             }

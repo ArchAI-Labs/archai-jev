@@ -39,6 +39,17 @@ pub enum Unsupported {
         j: usize,
         text: String,
     },
+    /// The tokens of a key are the start of the tokens of another one (spec 010 section 2): the
+    /// score of a key is a sum of log-probabilities, so the longer one could never win.
+    KeyStartsAnother {
+        question: String,
+        /// Index and text of the shorter key (the prefix).
+        short: usize,
+        short_key: String,
+        /// Index and text of the longer key.
+        long: usize,
+        long_key: String,
+    },
     /// An option key that the tokenizer turns into no token at all (spec 010).
     KeyWithoutTokens {
         question: String,
@@ -107,6 +118,19 @@ impl fmt::Display for Unsupported {
                 f,
                 "question {}: options {i} and {j} read exactly the same to the model after normalization (\"{text}\"); make them distinguishable",
                 quote(question)
+            ),
+            Unsupported::KeyStartsAnother {
+                question,
+                short,
+                short_key,
+                long,
+                long_key,
+            } => write!(
+                f,
+                "question {}: the key {} of option {long} starts with the tokens of the key {} of option {short}, so the model could never choose it; use keys that do not start with one another (letters, or numbers of the same width such as 01, 02, ..., 10)",
+                quote(question),
+                quote(long_key),
+                quote(short_key)
             ),
             Unsupported::KeyWithoutTokens {
                 question,
@@ -192,6 +216,17 @@ mod tests {
         assert!(
             dup.to_string()
                 .contains("options 0 and 2 read exactly the same")
+        );
+        let prefix = Unsupported::KeyStartsAnother {
+            question: "q".into(),
+            short: 1,
+            short_key: "option_1".into(),
+            long: 10,
+            long_key: "option_10".into(),
+        };
+        assert_eq!(
+            prefix.to_string(),
+            "question \"q\": the key \"option_10\" of option 10 starts with the tokens of the key \"option_1\" of option 1, so the model could never choose it; use keys that do not start with one another (letters, or numbers of the same width such as 01, 02, ..., 10)"
         );
         let tok = Unsupported::Untokenizable {
             segment: "state".into(),

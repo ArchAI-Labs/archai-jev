@@ -184,6 +184,13 @@ def main() -> None:
         UnsupportedRequestError,
     )
     attempt(
+        "an option key that starts another key (the longer one could never win)",
+        lambda: jev.ask(
+            "hello", {"q": Choice("Which one?", ["refund", "refund request", "other"])}
+        ),
+        UnsupportedRequestError,
+    )
+    attempt(
         "an option key that is too long",
         lambda: jev.ask(
             "hello", {"q": Choice("Which one?", ["a" * 40, "b"])}  # many tokens

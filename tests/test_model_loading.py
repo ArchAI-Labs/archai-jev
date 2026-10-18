@@ -114,7 +114,7 @@ def test_list_models_is_static_and_marks_the_default() -> None:
     assert d.tasks is None  # any Choice or YesNo, not a closed set
     assert d.calibrated is True and d.temperature == pytest.approx(1.7497)
     assert d.notice and "overconfident" in d.notice
-    assert d.license == "Apache-2.0" and d.max_context == 768
+    assert d.license == "Apache-2.0" and d.max_context == 512
     assert d.revision is not None and d.revision.startswith("7730248d")
     assert list_models() == models  # deterministic
 
@@ -141,9 +141,9 @@ def test_list_models_reports_the_variants_of_each_model() -> None:
 
 def test_list_models_reports_the_limits_of_each_head() -> None:
     by_name = {m.name: m for m in list_models()}
-    # the default scores the keys of up to 8 options, of up to 4 tokens each
+    # the default scores the keys of up to 20 options, of up to 4 tokens each
     default = by_name["nickprock/archai-jev-qwen-1.5b"]
-    assert (default.max_options, default.max_key_tokens) == (8, 4)
+    assert (default.max_options, default.max_key_tokens) == (20, 4)
     # a pointer head has no limit of its own
     kev = by_name["jaredpalmer/kev-0.8b"]
     assert (kev.max_options, kev.max_key_tokens) == (None, None)

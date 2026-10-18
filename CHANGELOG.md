@@ -17,8 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`max_options`, `max_key_tokens`) and `template = decision-index-chatml`; it has no closed set of
   tasks (`tasks: null`). A request the model cannot answer is refused before any computation, with
   the limit and the value received: `Score` questions, more options than the model scores, an
-  option key of too many tokens (or none), two keys that are the same tokens, a prompt that with
-  its longest key does not fit the context. The prompt ids and the key ids are identical to the
+  option key of too many tokens (or none), two keys that are the same tokens, a key that starts
+  another key (its score would always be at most the other's, so it could never be chosen: our
+  measurement of the right answer on such a key was 0 of 95), a prompt that with its longest key
+  does not fit the context. The prompt ids and the key ids are identical to the
   reference engine's on the 87 questions of its golden, and the engine's scores are within 0.003
   of its probabilities on the fp16 weights (0.06 on the published Q8_0). Questions about the same
   state share the system block and the state through the cache of prefixes.
@@ -125,9 +127,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1.1 to 1.2 times, which is why Python keeps one request at a time.
 
 ### Changed
+- **The self-check no longer depends on `prefix_cache_mib`**: the vectors of a model always run in
+  the segments of the template's cuts, the same computation a default `Jev` uses, even when the cache
+  is off. The two ways of computing a row (in one piece, or in segments) differ by a few hundredths
+  of probability on a quantised model (measured on the v2: up to 0.04 for Q8_0, up to 0.09 for a
+  4-bit file, at temperature 1), so a check that followed the cache setting could refuse a model
+  that loads with the cache on. The answers with `prefix_cache_mib=0` are unchanged.
+- **Option keys of several tokens are scored together** (v2 models): the keys that continue after
+  their first token now run in groups of four in one decode instead of one decode each. A question with
+  eight keys of three or four tokens costs about 1.3 times the prompt alone instead of 1.7, and one with
+  twenty keys about 1.4 instead of 2.2. The probabilities are the same (within 5e-5 of the old path, and
+  closer to the reference engine), the memory of the context grows by about 50 MiB.
 - **The default model is now the Decision Index model (v2)**: `Jev.from_pretrained()` loads revision
-  `7730248d` of `nickprock/archai-jev-qwen-1.5b`, which answers any `Choice` (up to 8 options, keys
-  of up to 4 tokens) and any `YesNo`, instead of four fixed tasks. A `YesNo` is scored as the
+  `7730248d` of `nickprock/archai-jev-qwen-1.5b`, which answers any `Choice` (up to 20 options, keys
+  of up to 4 tokens, 512 tokens per prompt) and any `YesNo`, instead of four fixed tasks. A `YesNo` is scored as the
   Decision Index `noul` question; for a question about a long passage, a `Choice` with the keys
   `yes` and `no` was clearly better in our measurement (accuracy 0.76 against 0.63 on BoolQ, and
   within a few questions on five other tasks). `Score` is refused. The first release of the model

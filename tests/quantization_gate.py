@@ -29,8 +29,10 @@ SCHEMA = "archai-jev.quantization-report/1"
 
 #: G1: overall ECE (test split, T fitted on the validation split) may exceed the baseline by this.
 G1_OVERALL_ECE_MARGIN = 0.01
-#: G1: no task may have an ECE above this.
-G1_TASK_ECE_MAX = 0.06
+#: G1: per task, the ECE may exceed the baseline's ECE of the same task by this. (Amended 2026-10-18,
+#: D57, before any v2 variant was measured: the first rule, an absolute 0.06, was tuned on the v1 and
+#: the v2 baseline itself is above it on two tasks, which would have refused every variant.)
+G1_TASK_ECE_MARGIN = 0.02
 #: G2: paired accuracy difference (variant - baseline), overall: at least this (-1.0 point).
 G2_OVERALL_ACCURACY_MIN = -0.010
 #: G2: ... and for each task (-3.0 points).
@@ -58,7 +60,7 @@ AA_INTERVAL = (0.95, 1.05)
 THRESHOLDS: dict[str, Any] = {
     "G1": {
         "overall_ece_margin": G1_OVERALL_ECE_MARGIN,
-        "task_ece_max": G1_TASK_ECE_MAX,
+        "task_ece_margin": G1_TASK_ECE_MARGIN,
     },
     "G2": {
         "overall_accuracy_min": G2_OVERALL_ACCURACY_MIN,
@@ -175,12 +177,14 @@ def _g1(report: dict[str, Any], v: dict[str, Any]) -> Check:
         raise _MissingError("quality/by_task")
     for task in tasks:
         ece = _number(v, "quality", "by_task", task, "ece")
-        if ece > G1_TASK_ECE_MAX:
+        base_task = _number(report, "baseline", "quality", "by_task", task, "ece")
+        task_limit = base_task + G1_TASK_ECE_MARGIN
+        if ece > task_limit:
             return Check(
                 False,
                 ece,
-                G1_TASK_ECE_MAX,
-                f"ECE of task {task!r} is {ece:.4f}, above {G1_TASK_ECE_MAX}",
+                task_limit,
+                f"ECE of task {task!r} is {ece:.4f}, above the baseline's {base_task:.4f} + {G1_TASK_ECE_MARGIN}",
             )
     return Check(True, got, limit, "calibration within the margin")
 

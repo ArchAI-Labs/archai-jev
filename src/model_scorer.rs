@@ -184,6 +184,18 @@ impl ModelScorer {
         questions: &Questions,
         control: &dyn Control,
     ) -> Result<Run> {
+        self.run_on(state, questions, control, false)
+    }
+
+    /// `canonical` forces the path with cuts even with no cache (a store that keeps nothing):
+    /// the self-check uses it so that what it verifies does not depend on `prefix_cache_mib`.
+    fn run_on(
+        &self,
+        state: &State,
+        questions: &Questions,
+        control: &dyn Control,
+        canonical: bool,
+    ) -> Result<Run> {
         let types: Vec<&str> = self.question_types.iter().map(String::as_str).collect();
         let limits = RequestLimits {
             model: &self.model,
@@ -197,7 +209,7 @@ impl ModelScorer {
 
         let has_cuts = (0..prompt.branches().len())
             .any(|i| prompt.row_cuts(i).is_some_and(|cuts| !cuts.is_empty()));
-        let logits = if self.prefix_limit > 0 && has_cuts {
+        let logits = if (self.prefix_limit > 0 || canonical) && has_cuts {
             self.score_segmented(questions, &prompt, control)?
         } else {
             self.score_plain(questions, &prompt, control)?
@@ -296,7 +308,9 @@ impl VectorRunner for ModelScorer {
     fn run(&self, request: &Json) -> Result<RunOutput> {
         let (state, questions) =
             request_to_domain(request).map_err(|detail| Error::Inference { detail })?;
-        let run = ModelScorer::run(self, &state, &questions)?;
+        // the numbers of a K-quant differ by up to a few hundredths of probability between the
+        // row in one decode and the row in the segments of its cuts (D59): verify the latter
+        let run = self.run_on(&state, &questions, &NoControl, true)?;
         Ok(RunOutput {
             input_ids: run.input_ids,
             questions: run.questions,

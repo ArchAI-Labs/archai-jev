@@ -18,7 +18,7 @@ Run it
 ------
     python demos/002_grounding_check.py
 
-The default model reads at most 768 tokens per question (roughly 500 words), including the
+The default model reads at most 512 tokens per question (roughly 300 words), including the
 source. A longer document must be split in chunks first: the library refuses to truncate
 text silently (demo 004 shows the error).
 """

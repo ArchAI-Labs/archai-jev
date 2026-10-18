@@ -17,7 +17,7 @@
 //! do: the one declared difference.
 
 use super::chatml::prefix_cut;
-use super::limits::{RequestLimits, check_distinct};
+use super::limits::{RequestLimits, check_distinct, check_no_key_prefix};
 use super::prompt::{Branch, Cut, CutKind, Prompt};
 use super::sanitize::sanitize;
 use super::template::Template;
@@ -236,6 +236,7 @@ impl Template for DecisionIndexChatMl {
                 key_ids.push(ids);
             }
             check_distinct(name, &key_ids, &keys)?;
+            check_no_key_prefix(name, &key_ids, &keys)?;
 
             let mut ids = vec![im_start];
             ids.extend(tokenizer.encode_raw(&format!("system\n{SYSTEM_PROMPT}"), "system prompt")?);
@@ -631,6 +632,55 @@ mod tests {
             matches!(u, Unsupported::IndistinguishableOptions { i: 0, j: 1, .. }),
             "{u}"
         );
+    }
+
+    fn keys_question(keys: &[&str]) -> Questions {
+        let options = keys.iter().map(|k| ChoiceOption::key(*k)).collect();
+        one("q", choice("Pick", options))
+    }
+
+    #[test]
+    fn a_key_that_starts_another_is_refused_whatever_the_order() {
+        // the shorter key scores at least as much as the longer one: the longer could never win
+        for (keys, short, long) in [
+            (vec!["a", "b", "ab"], 0, 2),
+            (vec!["ab", "b", "a"], 2, 0),
+            (vec!["k1", "k2", "k10"], 0, 2),
+        ] {
+            let u = unsupported(build(
+                &st(StateValue::string("s")),
+                &keys_question(&keys),
+                8,
+            ));
+            let Unsupported::KeyStartsAnother {
+                short: s,
+                long: l,
+                short_key,
+                long_key,
+                ..
+            } = &u
+            else {
+                panic!("{keys:?}: {u}");
+            };
+            assert_eq!((*s, *l), (short, long), "{keys:?}");
+            assert_eq!(short_key, keys[short]);
+            assert_eq!(long_key, keys[long]);
+            assert!(u.to_string().contains("could never choose it"), "{u}");
+        }
+    }
+
+    #[test]
+    fn keys_that_share_a_start_but_do_not_contain_one_another_are_accepted() {
+        // same width (`01`...`12`), a common start (`ab`, `ac`), single characters: all fine
+        for keys in [
+            vec!["01", "02", "10", "11", "12"],
+            vec!["ab", "ac", "ad"],
+            vec!["a", "b", "c"],
+            vec!["option_0", "option_1", "x"],
+        ] {
+            build(&st(StateValue::string("s")), &keys_question(&keys), 8)
+                .unwrap_or_else(|e| panic!("{keys:?}: {e}"));
+        }
     }
 
     #[test]

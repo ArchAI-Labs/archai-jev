@@ -51,9 +51,7 @@ pub struct Tolerance {
 /// The tolerance for `family` with weights of type `dtype` checked against `reference`, if one
 /// is defined.
 pub fn lookup(family: &str, dtype: &str, reference: Reference) -> Option<Tolerance> {
-    #[cfg(feature = "testing")]
-    use Reference::Engine;
-    use Reference::FullPrecision;
+    use Reference::{Engine, FullPrecision};
     let t = match (family, dtype, reference) {
         ("qwen35-pointer", "f32" | "bf16", FullPrecision) => Tolerance {
             logit: Some(6e-2),
@@ -63,14 +61,16 @@ pub fn lookup(family: &str, dtype: &str, reference: Reference) -> Option<Toleran
             logit: Some(0.25),
             p: 7e-2,
         },
-        // spec 010: provisional, the same as the letters family until the spike S11 measures them
+        // spec 010, spike S11 (D54): measured against the Decision Index kit in fp32 on CPU.
+        // f16 weights 0.0027 (87 questions); the published Q8_0 0.0627 on 129 questions of 3 to
+        // 2,400 tokens (it does not grow with the length). Q8_0 gets 1.6x the largest gap seen.
         ("qwen2-keys", "f32" | "bf16", FullPrecision) => Tolerance {
             logit: None,
             p: 1.5e-2,
         },
         ("qwen2-keys", "q8_0", FullPrecision) => Tolerance {
             logit: None,
-            p: 0.2,
+            p: 0.1,
         },
         ("qwen2-letters", "f32" | "bf16", FullPrecision) => Tolerance {
             logit: None,
@@ -88,12 +88,24 @@ pub fn lookup(family: &str, dtype: &str, reference: Reference) -> Option<Toleran
         // study rows (spec 009): refuse nothing, so that a K-quant can be loaded and MEASURED;
         // never in a release build
         #[cfg(feature = "quant-study")]
-        ("qwen2-letters" | "qwen2-keys", "q6_k" | "q5_k_m" | "q4_k_m", FullPrecision) => {
-            Tolerance {
-                logit: None,
-                p: 1.0,
-            }
-        }
+        ("qwen2-letters" | "qwen2-keys", "q6_k" | "q5_k_m", FullPrecision) => Tolerance {
+            logit: None,
+            p: 1.0,
+        },
+        #[cfg(feature = "quant-study")]
+        ("qwen2-letters", "q4_k_m", FullPrecision) => Tolerance {
+            logit: None,
+            p: 1.0,
+        },
+        // spec 009 section 4 (D58): the Q4_K_M of the v2 is checked against vectors RECORDED BY THE
+        // ENGINE on the very file (SHA-256 in the registry), so the tolerance covers drift of the
+        // engine or of the file, not the quantization error (that is measured once, by the gate).
+        // At most 0.05 and at least twice the largest difference between platforms; 0.05 until the
+        // second platform has run, then tightened to what that measurement allows.
+        ("qwen2-keys", "q4_k_m", Engine) => Tolerance {
+            logit: None,
+            p: 0.05,
+        },
         // a tight row for the engine-recorded rule (spec 009 section 4), to test the mechanism
         #[cfg(feature = "testing")]
         ("test-fake", "f32", Engine) => Tolerance {
@@ -118,6 +130,7 @@ pub fn all() -> Vec<(&'static str, &'static str, Reference)> {
         ("qwen2-keys", "f32", Reference::FullPrecision),
         ("qwen2-keys", "bf16", Reference::FullPrecision),
         ("qwen2-keys", "q8_0", Reference::FullPrecision),
+        ("qwen2-keys", "q4_k_m", Reference::Engine),
     ];
     #[cfg(feature = "testing")]
     rows.extend([
@@ -134,7 +147,6 @@ pub fn all() -> Vec<(&'static str, &'static str, Reference)> {
         ("qwen2-letters", "q4_k_m", Reference::FullPrecision),
         ("qwen2-keys", "q6_k", Reference::FullPrecision),
         ("qwen2-keys", "q5_k_m", Reference::FullPrecision),
-        ("qwen2-keys", "q4_k_m", Reference::FullPrecision),
     ]);
     rows
 }
@@ -159,6 +171,13 @@ mod tests {
             Some(Tolerance {
                 logit: None,
                 p: 0.2
+            })
+        );
+        assert_eq!(
+            lookup("qwen2-keys", "q8_0", FP),
+            Some(Tolerance {
+                logit: None,
+                p: 0.1
             })
         );
         // a K-quant has a row only behind the study feature, and then one that refuses nothing
@@ -224,12 +243,20 @@ mod name_tests {
         // spec 009 AC-1: the dtypes a release accepts and the dtypes it can verify are the
         // same set (for the real families; the test families are not names users can pick)
         for family in ["qwen2-letters", "qwen2-keys"] {
-            for d in recipes::DTYPES {
+            for d in recipes::DTYPES.iter().filter(|d| !d.starts_with("q4_k")) {
                 assert!(
                     lookup(family, d, Reference::FullPrecision).is_some(),
                     "{family} {d} has a name but no tolerance"
                 );
             }
+        }
+        // a K-quant is admitted per family and only against the vectors the engine recorded on
+        // its file (D58): every name has a row somewhere, never a loose one in a release build
+        for d in recipes::DTYPES {
+            assert!(
+                all().iter().any(|(_, row_d, _)| row_d == d),
+                "{d} has a name but no row for any family"
+            );
         }
         for (f, d, _) in all() {
             if f == "qwen2-letters" || f == "qwen2-keys" || f == "qwen35-pointer" {

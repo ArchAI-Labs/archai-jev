@@ -39,7 +39,7 @@ def test_a_good_report_is_admitted() -> None:
 def test_the_thresholds_are_the_ones_the_user_confirmed() -> None:
     # spec 009 section 5 and D50. Moving one of these is a decision: change it here on purpose.
     assert gate.THRESHOLDS == {
-        "G1": {"overall_ece_margin": 0.01, "task_ece_max": 0.06},
+        "G1": {"overall_ece_margin": 0.01, "task_ece_margin": 0.02},
         "G2": {"overall_accuracy_min": -0.010, "task_accuracy_min": -0.030},
         "G3": {"brier_max": 0.01},
         "G4": {
@@ -55,11 +55,18 @@ def test_the_thresholds_are_the_ones_the_user_confirmed() -> None:
 
 
 BASE_ECE = REPORT["baseline"]["quality"]["overall"]["ece"]
+BASE_TASK_ECE = REPORT["baseline"]["quality"]["by_task"]["intent"]["ece"]
 
 # (criterion, figure, value that just passes, value that just fails, extra changes)
 EDGES = [
     ("G1", "quality.overall.ece", BASE_ECE + 0.01 - EPS, BASE_ECE + 0.01 + EPS, {}),
-    ("G1", "quality.by_task.intent.ece", 0.06 - EPS, 0.06 + EPS, {}),
+    (
+        "G1",
+        "quality.by_task.intent.ece",
+        BASE_TASK_ECE + 0.02 - EPS,
+        BASE_TASK_ECE + 0.02 + EPS,
+        {},
+    ),
     ("G2", "paired.overall.accuracy_diff.estimate", -0.010 + EPS, -0.010 - EPS, {}),
     (
         "G2",
@@ -156,6 +163,7 @@ def required_figures() -> list[tuple[str, str]]:
     return [
         ("G1", "quality.overall.ece"),
         ("G1", "quality.by_task"),
+        ("G1", "baseline.quality.by_task.intent.ece"),
         ("G2", "paired.overall.accuracy_diff.estimate"),
         ("G2", "paired.overall.accuracy_diff.ci95"),
         ("G2", "paired.by_task.safety.accuracy_diff.ci95"),

@@ -294,7 +294,12 @@ pub fn gguf_vs_manifest(
                 got: t.dims.clone(),
             });
         }
-        let allowed = recipes::allowed_types(dtype, spec.role);
+        let allowed = recipes::expected_types(
+            dtype,
+            &spec.name,
+            spec.role,
+            resolved.params.int("n_layers"),
+        );
         if !allowed.is_some_and(|types| types.contains(&t.ty)) {
             return Err(Incompat::TensorType {
                 name: spec.name.clone(),

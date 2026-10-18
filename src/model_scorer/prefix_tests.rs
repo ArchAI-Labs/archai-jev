@@ -144,6 +144,31 @@ fn limit_zero_is_the_plain_path() {
 }
 
 #[test]
+fn the_self_check_runs_the_path_with_cuts_whatever_the_cache_setting() {
+    use crate::models::verify::VectorRunner;
+    // the fake is partition sensitive: the plain path and the path with cuts give other numbers
+    let request_json = crate::json_strict::parse(
+        br#"{"state":"A long source text that every hypothesis is checked against.","questions":{"q":{"type":"noul","instructions":"The claim is supported.","criteria":{"true":"The condition is valid and supported by state.","false":"The condition is invalid or contradicted."}}}}"#,
+    )
+    .unwrap();
+    let ask = |limit: u64| {
+        let (s, _) = scorer(limit);
+        VectorRunner::run(&s, &request_json).unwrap()
+    };
+    let off = ask(0);
+    let on = ask(1 << 20);
+    assert_eq!(off, on, "the self-check depends on the cache setting");
+    // and the guard can fail: the ordinary run with no cache is the plain path
+    let (s, _) = scorer(0);
+    let (state, qs) = crate::request::request_to_domain(&request_json).unwrap();
+    let plain = s.run(&state, &qs).unwrap();
+    assert_ne!(
+        plain.questions, off.questions,
+        "the fake is not partition sensitive here"
+    );
+}
+
+#[test]
 fn shared_segments_decoded_once() {
     for k in [1usize, 2, 8, 40] {
         let (s, fake) = scorer(1 << 20);

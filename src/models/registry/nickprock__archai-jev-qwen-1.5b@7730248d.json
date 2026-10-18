@@ -34,7 +34,7 @@
    }
   }
  },
- "max_context": 768,
+ "max_context": 512,
  "trained_context": 1536,
  "license": {
   "spdx": "Apache-2.0",
@@ -45,7 +45,7 @@
  "head": {
   "kind": "key_logprob",
   "rule": "sum_logprob_full_vocab",
-  "max_options": 8,
+  "max_options": 20,
   "max_key_tokens": 4
  },
  "template": {
@@ -53,7 +53,7 @@
   "version": 1
  },
  "tasks": null,
- "notice": "General Choice/yes-no model in the Decision Index format (Qwen2.5-1.5B fine-tune, English only). Reliable on the task families it was trained on (safety, NLI, similarity, topic, multiple-choice QA with few options); unreliable with many options and on families it never saw, where its probabilities are overconfident. Limits (options, key tokens, context) are provisional.",
+ "notice": "General Choice/yes-no model in the Decision Index format (Qwen2.5-1.5B fine-tune, English only). Reliable on the task families it was trained on (safety, NLI, similarity, topic, multiple-choice QA with few options) and measured up to 20 options with keys that do not start with one another (a request with such keys is refused). Unreliable on families it never saw and on long states (it loses accuracy beyond about 350 tokens); the declared temperature is fitted on the training families (2 to 5 options) and makes the probabilities worse with many options or other families, where they should be read as overconfident or as uncalibrated. Limits: 20 options, keys of 4 tokens, 512 tokens per prompt.",
  "variants": [
   {
    "dtype": "q8_0",

@@ -96,11 +96,30 @@ fn the_score_of_an_option_is_the_sum_of_its_full_vocabulary_log_probs() {
 }
 
 #[test]
-fn keys_that_share_a_prefix_or_are_a_prefix_of_another_are_scored_each_for_itself() {
+fn keys_that_share_a_start_are_scored_each_for_itself() {
+    // a common start is fine; a key that is the start of another is refused (next test)
     let (s, fake) = scorer();
-    let keys = ["option_0", "option_1", "a", "ab", "abc"];
+    let keys = ["option_0", "option_1", "ab", "ac", "x"];
     let run = s.run(&state("x"), &one(choice(&keys))).unwrap();
     assert_close(&run.questions[0].1, &expected(&fake, &run.input_ids, &keys));
+}
+
+#[test]
+fn a_key_that_starts_another_is_refused_before_the_engine_is_touched() {
+    // the shorter key always scores at least as much as the longer one (spec 010 section 2, S11):
+    // `option_10` could never win, so its probability would be wrong
+    let (s, fake) = scorer();
+    for keys in [
+        vec!["option_1", "option_2", "option_10"],
+        vec!["a", "ab", "abc"],
+    ] {
+        let u = refused(s.run(&state("x"), &one(choice(&keys))));
+        assert!(
+            matches!(u, Unsupported::KeyStartsAnother { .. }),
+            "{keys:?}: {u}"
+        );
+    }
+    assert_eq!(fake.stats().sessions, 0, "no refusal may reach the engine");
 }
 
 #[test]

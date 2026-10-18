@@ -14,6 +14,7 @@ pub mod cpu;
 #[cfg(any(test, feature = "testing"))]
 pub mod fake;
 pub mod llama;
+mod waves;
 
 use std::any::Any;
 use std::sync::Arc;

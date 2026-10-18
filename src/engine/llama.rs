@@ -22,6 +22,7 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::token::LlamaToken;
 
 use super::cpu::{self, HostCpu};
+use super::waves::plan_waves;
 use super::{Forward, Output, OutputSpec, Session, Snapshot};
 use crate::control::{Control, NoControl};
 use crate::error::{Error, Result};
@@ -67,7 +68,18 @@ pub struct LlamaForward {
     pool: SlotPool,
     /// Longest option key the model scores (spec 010); `0` = the model reads no keys.
     key_tokens: u32,
+    /// How many keys continue together in one decode (one llama.cpp sequence each); `1` = one
+    /// key at a time, the reference path.
+    key_wave: u32,
 }
+
+/// Keys that continue together by default. A decode of a few tokens costs about as much as a
+/// decode of many (the weights are read once either way), so a request with eight keys of several
+/// tokens pays two decodes instead of eight (spec 010, P2). Each slot of a wave is one more
+/// sequence in every context, and a context is built for each request: the KV cache of the extra
+/// sequences costs time even for keys of one token. Measured on the v2 (context 512, Q8_0): a wave
+/// of 4 gives within 3 % of what 8 gives and costs half the allocation.
+pub const KEY_WAVE: u32 = 4;
 
 impl LlamaForward {
     /// Load the GGUF at `path` (already checked by model loading).
@@ -84,6 +96,7 @@ impl LlamaForward {
             config,
             pool: SlotPool::new(1, budget),
             key_tokens: 0,
+            key_wave: 1,
         })
     }
 
@@ -93,7 +106,26 @@ impl LlamaForward {
     #[must_use]
     pub fn with_key_scoring(mut self, max_key_tokens: u32) -> Self {
         self.key_tokens = max_key_tokens;
+        self.key_wave = KEY_WAVE;
         self
+    }
+
+    /// How many keys of a request continue in the same decode (at least 1). `1` is the reference
+    /// path: one key at a time on one extra sequence, as before waves existed. Only before the
+    /// first request: it changes the contexts that are created.
+    #[must_use]
+    pub fn with_key_wave(mut self, keys: u32) -> Self {
+        self.key_wave = keys.max(1);
+        self
+    }
+
+    /// Sequences of a context: the state, the question and one per key of a wave.
+    fn sequences(&self) -> u32 {
+        if self.key_tokens > 0 {
+            2 + self.key_wave
+        } else {
+            2
+        }
     }
 
     /// Let up to `k` requests run together (spec 008). The default is 1: requests wait their
@@ -130,8 +162,9 @@ impl LlamaForward {
     /// saved prefix: built from what is really set, so changing a parameter changes the key.
     pub fn engine_fingerprint(&self) -> String {
         if self.key_tokens > 0 {
+            let rows = self.sequences();
             return format!(
-                "llama-cpp-2=0.1.157; n_ctx=({}+{})x3; n_batch={}; n_ubatch={}; n_seq_max=3; embeddings={}; kv=library default",
+                "llama-cpp-2=0.1.157; n_ctx=({}+{})x{rows}; n_batch={}; n_ubatch={}; n_seq_max={rows}; embeddings={}; kv=library default",
                 self.config.max_context,
                 self.key_tokens,
                 self.config.max_context,
@@ -150,8 +183,8 @@ impl LlamaForward {
 
     fn context_params(&self, threads: i32) -> Result<LlamaContextParams> {
         // sequence 0 holds the state, sequence 1 the question being run and, if the model scores
-        // option keys, sequence 2 the continuation of one key
-        let rows = if self.key_tokens > 0 { 3u32 } else { 2u32 };
+        // option keys, sequences 2.. the continuation of the keys of one wave
+        let rows = self.sequences();
         let n_ctx = self
             .config
             .max_context
@@ -203,6 +236,10 @@ struct LlamaSession<'a> {
     hidden_states: bool,
     /// Longest option key this session scores (0 = none).
     key_tokens: u32,
+    /// Keys that continue together in one decode (at least 1).
+    key_wave: usize,
+    /// Most tokens one decode takes (`n_batch` of the context).
+    max_batch: usize,
     /// Last on purpose: the context is freed before the slot is given back.
     _slot: Slot<'a>,
 }
@@ -266,8 +303,9 @@ impl LlamaSession<'_> {
     ///
     /// The first token of every key is scored at the last token of the row, whose distribution
     /// the last decode left in the logits. A longer key goes on, token by token, on a copy of the
-    /// row (sequence 2) that is discarded: the keys never see each other, which gives the same
-    /// numbers as the block-diagonal mask of the reference engine.
+    /// row that is discarded; the keys of a wave go on together, each on its own copy (sequences
+    /// 2..), in one decode. The keys never see each other, which gives the same numbers as the
+    /// block-diagonal mask of the reference engine.
     fn read_keys(
         &mut self,
         position: usize,
@@ -289,41 +327,103 @@ impl LlamaSession<'_> {
         let mut sums = super::log_probs_of(self.ctx.get_logits_ith(i), &firsts, position)?;
         // positions count from the start of the sequence: the row ends at `last`
         let last = self.shared_len + position;
-        for (sum, key) in sums.iter_mut().zip(keys) {
-            if key.len() < 2 {
-                continue;
-            }
-            if u32::try_from(key.len()).map_or(true, |n| n > self.key_tokens) {
+        // the keys that go on after their first token, in waves: each key of a wave continues on
+        // a copy of the row (its own sequence, 2..) and the whole wave is one decode
+        for (index, key) in keys.iter().enumerate() {
+            if u32::try_from(key.len()).map_or(true, |n| n > self.key_tokens) && key.len() >= 2 {
                 return Err(inference(format!(
-                    "a key of {} tokens is longer than the {} this model was loaded to score",
+                    "a key of {} tokens is longer than the {} this model was loaded to score (key {index})",
                     key.len(),
                     self.key_tokens
                 )));
             }
-            let steps = key.len() - 1;
+        }
+        for wave in plan_waves(keys, self.key_wave, self.max_batch) {
+            let totals = self.continue_keys(&wave, keys, last)?;
+            for (&index, total) in wave.iter().zip(totals) {
+                if let Some(sum) = sums.get_mut(index) {
+                    *sum += total;
+                }
+            }
+        }
+        Ok(sums)
+    }
+
+    /// Score the tokens after the first of each key of `wave`, all in one decode: key `w` of the
+    /// wave goes on sequence `2 + w`, a copy of the row (sequence 1), from position `last + 1`.
+    /// The keys never see each other (separate sequences), which gives the same numbers as the
+    /// block-diagonal mask of the reference engine. The sequences are emptied before returning,
+    /// whatever happens.
+    fn continue_keys(
+        &mut self,
+        wave: &[usize],
+        keys: &[Vec<u32>],
+        last: usize,
+    ) -> Result<Vec<f64>> {
+        let seq_of = |w: usize| i32::try_from(2 + w).map_err(|_| inference("too many keys"));
+        let mut copied = 0;
+        let result = (|| {
+            for w in 0..wave.len() {
+                self.ctx
+                    .kv_cache_seq_cp(1, seq_of(w)?, None, None)
+                    .map_err(|e| inference(format!("cannot copy the question: {e}")))?;
+                copied += 1;
+            }
+            let total: usize = wave
+                .iter()
+                .map(|&i| keys.get(i).map_or(0, |k| k.len() - 1))
+                .sum();
+            let mut batch = LlamaBatch::new(total.max(1), 1);
+            // where each key's first fed token is in the batch
+            let mut starts = Vec::with_capacity(wave.len());
+            let mut at = 0usize;
+            for (w, &index) in wave.iter().enumerate() {
+                let key = keys.get(index).map_or(&[][..], Vec::as_slice);
+                starts.push(at);
+                for (t, &token) in key.iter().take(key.len() - 1).enumerate() {
+                    let id = i32::try_from(token)
+                        .map_err(|_| inference(format!("token id {token} is too large")))?;
+                    let pos = i32::try_from(last + 1 + t)
+                        .map_err(|_| inference("position is too large"))?;
+                    batch
+                        .add(LlamaToken(id), pos, &[seq_of(w)?], true)
+                        .map_err(|e| inference(format!("cannot build the batch: {e}")))?;
+                    at += 1;
+                }
+            }
             self.ctx
-                .kv_cache_seq_cp(1, 2, None, None)
-                .map_err(|e| inference(format!("cannot copy the question: {e}")))?;
-            let result = (|| {
-                let given = key.get(..steps).unwrap_or_default();
-                decode(&mut self.ctx, given, last + 1, 2, &vec![true; steps])?;
+                .decode(&mut batch)
+                .map_err(|e| inference(format!("decoding failed: {e}")))?;
+            let mut totals = Vec::with_capacity(wave.len());
+            for (&index, &first) in wave.iter().zip(&starts) {
+                let key = keys.get(index).map_or(&[][..], Vec::as_slice);
                 let mut total = 0.0;
                 for (t, &next) in key.iter().skip(1).enumerate() {
-                    let at = i32::try_from(t).map_err(|_| inference("a key is too long"))?;
+                    let at =
+                        i32::try_from(first + t).map_err(|_| inference("a key is too long"))?;
                     let lp =
                         super::log_probs_of(self.ctx.get_logits_ith(at), &[next], last + 1 + t)?;
                     total += lp.first().copied().unwrap_or(f64::NAN);
                 }
-                Ok::<f64, Error>(total)
-            })();
-            let cleared = self
-                .ctx
-                .clear_kv_cache_seq(Some(2), None, None)
-                .map_err(|e| inference(format!("cannot clear the key: {e}")));
-            *sum += result?;
-            cleared?;
+                totals.push(total);
+            }
+            Ok::<Vec<f64>, Error>(totals)
+        })();
+        let mut cleared: Result<()> = Ok(());
+        for w in 0..copied {
+            let done = seq_of(w).and_then(|seq| {
+                self.ctx
+                    .clear_kv_cache_seq(Some(u32::try_from(seq).unwrap_or(0)), None, None)
+                    .map(|_| ())
+                    .map_err(|e| inference(format!("cannot clear the key: {e}")))
+            });
+            if cleared.is_ok() {
+                cleared = done;
+            }
         }
-        Ok(sums)
+        let totals = result?;
+        cleared?;
+        Ok(totals)
     }
 
     /// The position of each spec, checking the model was loaded for that kind of output.
@@ -496,6 +596,8 @@ impl LlamaForward {
             shared_len: 0,
             hidden_states: self.config.hidden_states,
             key_tokens: self.key_tokens,
+            key_wave: usize::try_from(self.key_wave.max(1)).unwrap_or(1),
+            max_batch: usize::try_from(self.config.max_context).unwrap_or(usize::MAX),
             _slot: slot,
         })
     }

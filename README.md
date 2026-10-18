@@ -118,12 +118,22 @@ What it accepts is declared by the model, not guessed (`jev.model_info`):
 
 | Limit | Value | If you go over |
 |---|---|---|
-| options of a `Choice` | `max_options` = 8 | `UnsupportedRequestError`, naming the limit and your value |
+| options of a `Choice` | `max_options` = 20 | `UnsupportedRequestError`, naming the limit and your value |
 | tokens of an option key | `max_key_tokens` = 4 | the same |
-| tokens of the whole prompt | `max_context` = 768 | the same (never truncated) |
+| tokens of the whole prompt | `max_context` = 512 | the same (never truncated) |
 | `Score` questions | not supported | the same |
+| a key that starts another key | refused | the same, naming both keys |
 
-These limits are provisional and conservative; they will be replaced by measured ones.
+The limits come from our measurements (Q8_0, one machine): with keys that do not start with one
+another, accuracy at 20 options is 0.88 to 0.98 and the expected calibration error at T = 1 is 0.02 to
+0.07; beyond about 350 tokens of state the model loses accuracy and becomes overconfident, which is
+why the context is 512 and not more.
+
+**Keys must not start with one another.** An option scores the sum of the log-probabilities of the
+tokens of its key, so a key whose tokens are the start of another key's (`1` and `10`, `A` and `AB`,
+`option_1` and `option_10`) always scores at least as much as the longer one, which can then never win.
+In our measurements the right answer on such a key was never chosen. Such a request is refused; use
+letters, words, or numbers of the same width (`01`, `02`, ..., `10`).
 
 **Know its limits.** It is reliable on the kinds of task it was trained on (safety, entailment,
 similarity, topic and multiple-choice questions with few options) and **overconfident** on tasks it
@@ -131,7 +141,10 @@ never saw. Measured on held-out data (Q8_0, the declared temperature 1.7497 fitt
 validation split): on the training tasks accuracy is 0.89 and the expected calibration error goes from
 0.062 to 0.009; on other datasets of the same task families, accuracy is 0.69 and the error only
 from 0.263 to 0.207; on families it never saw, accuracy is 0.79 and the error from 0.089 to 0.042
-(out-of-distribution sets: the first 300 questions of each task). It was not trained to
+(out-of-distribution sets: the first 300 questions of each task). The declared temperature is
+fitted on those training tasks (two to five options); with many options or other families it makes
+the expected calibration error worse (on 48 options with well-formed keys, from 0.07 to 0.34 on one
+set), so treat the probabilities there as uncalibrated. It was not trained to
 recognise prompt injections: on the two short ones we tried it answered "safe", with a low
 confidence (0.30 and 0.33, against 0.95 or more on ordinary requests), so look at the confidence
 and not only at the value. Measure it on your own data before relying on it (see below).
