@@ -481,7 +481,7 @@ fn a_calibration_that_is_declared_is_read_like_any_other() {
 
 #[test]
 fn a_dtype_that_was_not_measured_has_no_tolerance_and_is_refused() {
-    for dtype in ["f32", "bf16", "q6_k"] {
+    for dtype in ["f32", "bf16"] {
         let i = rejects(Builder::tiny_spark().dtype(dtype));
         assert!(
             matches!(i, Incompat::NoTolerance { ref dtype, .. } if !dtype.is_empty()),

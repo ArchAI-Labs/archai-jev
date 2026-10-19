@@ -185,7 +185,18 @@ def test_cancelling_aask_many_stops_between_states() -> None:
     assert scorer.calls <= 2, scorer.calls  # not ten
 
 
+def _wait_for_no_archai_threads(seconds: float = 10.0) -> None:
+    gc.collect()
+    deadline = time.perf_counter() + seconds
+    while archai_threads() and time.perf_counter() < deadline:
+        time.sleep(0.02)
+
+
 def test_executor_threads_are_at_most_four_and_end_with_the_jev() -> None:
+    # threads that an earlier test left winding down are not this test's: they would be counted
+    # on top of its four (a runner under load took longer than the test to see them end)
+    _wait_for_no_archai_threads()
+
     def use_a_jev() -> None:
         jev, _ = make(latency=0.05)
 
@@ -196,10 +207,7 @@ def test_executor_threads_are_at_most_four_and_end_with_the_jev() -> None:
         asyncio.run(main())
 
     use_a_jev()  # the Jev is gone when it returns
-    gc.collect()
-    deadline = time.perf_counter() + 10.0
-    while archai_threads() and time.perf_counter() < deadline:
-        time.sleep(0.02)
+    _wait_for_no_archai_threads()
     assert archai_threads() == []
 
 
