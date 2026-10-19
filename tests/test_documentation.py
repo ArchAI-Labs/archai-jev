@@ -130,11 +130,15 @@ THIRD_PARTY_NAMES = re.compile(
 )
 
 
-def _versioned_files() -> list[Path]:
-    """Every file git tracks, plus the ones it would track (new, not ignored)."""
+# A file that is not tracked yet counts only if it is small: CI and developers download
+# vocabularies of several MB (tokenizer.json) next to the sources, and a vocabulary holds any word.
+MAX_UNTRACKED_BYTES = 1_000_000
+
+
+def _git_files(*flags: str) -> list[Path]:
     try:
         listing = subprocess.run(
-            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            ["git", "ls-files", "-z", *flags],
             cwd=ROOT,
             capture_output=True,
             check=True,
@@ -143,6 +147,16 @@ def _versioned_files() -> list[Path]:
         pytest.skip("not a git checkout")
     names = [n for n in listing.stdout.decode("utf-8").split("\0") if n]
     return [ROOT / n for n in names]
+
+
+def _versioned_files() -> list[Path]:
+    """Every file git tracks, plus the small ones it would track (new, not ignored)."""
+    new = [
+        p
+        for p in _git_files("--others", "--exclude-standard")
+        if p.is_file() and p.stat().st_size <= MAX_UNTRACKED_BYTES
+    ]
+    return [*_git_files("--cached"), *new]
 
 
 def test_no_versioned_file_names_the_third_party_model() -> None:
