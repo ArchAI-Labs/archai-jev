@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A family of general models that answer with the letter of an option** (`spark2_5-letters`, head
+  `answer_letters`, template `spark-decisions` v3), for models published as GGUF that read a
+  multiple-choice prompt and answer with `A`, `B`, ...: the answer is the logit of those letters at
+  the last position of the prompt, with a softmax over the letters of the question only. There is
+  no registry entry: a model of this family is a local folder (GGUF, `tokenizer.json`,
+  `archai-jev-manifest.json`) loaded with `Jev.from_pretrained(path, ...)`. Such a model comes
+  **uncalibrated**: loading needs `temperature=` (from `Jev.calibrate`) or `allow_uncalibrated=True`,
+  and every answer says `calibrated=False`. The model sees only the letter and the description of
+  each option, never the key (a missing description is the key; two options with the same
+  description are refused); up to 26 options. A request the model cannot answer is refused before
+  any computation, with the limit and the value: `Score` questions, more options than the
+  manifest allows, a single option, an empty state, an empty instruction or description, a list or
+  an object where the model reads plain text, a prompt longer than `max_context`. The text of a
+  request cannot write the control tokens of the model: every token of the tokenizer is
+  neutralised in the state, the instructions and the descriptions (a manifest lists them, and the
+  list must be exactly the added tokens of `tokenizer.json`). The self-check of such a model runs
+  the prompt ids exactly and the probabilities within 0.10. Because the model attends through a
+  sliding window of 512 tokens, a prefix longer than that is never kept between requests (its
+  restored numbers would not be those of a cold decode); the questions of one request still share
+  it. See `benches/answer_letters/` for what it costs.
 - **General Choice/yes-no models in the Decision Index format** (spec 010): a new family of models,
   `qwen2-keys`, answers any `Choice` or `YesNo` instead of a fixed set of tasks. The prompt is the
   one of the Decision Index `transformers` engine (the benchmark suite of Jev models) inside the

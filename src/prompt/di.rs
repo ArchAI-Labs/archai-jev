@@ -100,7 +100,7 @@ fn write_json(value: &StateValue, out: &mut String) {
 /// A JSON string with Python's escapes for `ensure_ascii=False`: the quote, the backslash and the
 /// control characters (`\n \r \t \b \f` by name, the others as `\u00xx`); everything else, DEL and
 /// non-ASCII included, as it is.
-fn write_json_string(s: &str, out: &mut String) {
+pub(super) fn write_json_string(s: &str, out: &mut String) {
     out.push('"');
     for c in s.chars() {
         match c {

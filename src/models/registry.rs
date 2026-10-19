@@ -311,6 +311,19 @@ mod tests {
     use crate::prompt::tasks;
 
     #[test]
+    fn the_builtin_registry_has_no_third_party_letters_family() {
+        // the family exists in the table of families, but no registry entry uses it: a model of
+        // this family is a local folder with its own manifest
+        let reg = Registry::builtin().unwrap();
+        for m in reg.entries() {
+            assert_ne!(m.family, "spark2_5-letters", "{}", m.name);
+            assert_ne!(m.head.kind(), "answer_letters", "{}", m.name);
+            assert!(m.tokenizer.control_tokens.is_empty(), "{}", m.name);
+        }
+        assert!(crate::models::families::lookup("spark2_5-letters").is_some());
+    }
+
+    #[test]
     fn the_builtin_registry_passes_its_lint() {
         let reg = Registry::builtin().unwrap();
         reg.lint().unwrap();

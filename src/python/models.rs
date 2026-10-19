@@ -268,6 +268,7 @@ fn listed<'py>(py: Python<'py>, registry: &Registry, m: &Manifest) -> PyResult<B
         match &m.head {
             HeadSpec::Letters { .. } => "letters",
             HeadSpec::KeyLogProb { .. } => "key_logprob",
+            HeadSpec::AnswerLetters { .. } => "answer_letters",
             HeadSpec::Pointer { .. } => "pointer",
         },
     )?;

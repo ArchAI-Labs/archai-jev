@@ -84,6 +84,9 @@ impl ModelScorer {
                     let mut store = self.store();
                     for (j, key) in keys.iter().enumerate().rev() {
                         let end = plan.shared.get(j).map_or(0, |r| r.end);
+                        if !self.may_keep(end) {
+                            continue;
+                        }
                         let ids = first.get(..end).ok_or_else(|| outside("a prefix"))?;
                         if let Some(entry) = store.get(key, ids, &self.fingerprint) {
                             found = Some((j, entry));
@@ -194,7 +197,7 @@ impl ModelScorer {
         let (Some(cut), Some(key), Some(ids)) = (plan.common.get(j), keys.get(j), ids) else {
             return Ok(());
         };
-        let worth = {
+        let worth = self.may_keep(cut.pos) && {
             let mut store = self.store();
             !store.contains(key)
                 && store.limit_bytes() > 0

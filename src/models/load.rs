@@ -319,7 +319,9 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
     let tokenizer_path = by_entry(&manifest.tokenizer.file).unwrap_or_default();
     let head_path = match &manifest.head {
         HeadSpec::Pointer { weights, .. } => by_entry(weights),
-        HeadSpec::Letters { .. } | HeadSpec::KeyLogProb { .. } => None,
+        HeadSpec::Letters { .. } | HeadSpec::KeyLogProb { .. } | HeadSpec::AnswerLetters { .. } => {
+            None
+        }
     };
     // `originals_verified` says whether the SHA-256 of every original file was already checked
     // in this call (it is done before a conversion starts, and not twice).

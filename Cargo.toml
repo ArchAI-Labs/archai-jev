@@ -44,6 +44,22 @@ testing = ["dep:tempfile"]
 quant-study = []
 
 [[test]]
+name = "spark_letters_header"
+required-features = ["testing"]
+
+[[test]]
+name = "spark_letters_ids"
+required-features = ["testing"]
+
+[[test]]
+name = "spark_letters_real"
+required-features = ["testing"]
+
+[[test]]
+name = "spark_letters_bench"
+required-features = ["testing"]
+
+[[test]]
 name = "golden_ids"
 required-features = ["testing"]
 

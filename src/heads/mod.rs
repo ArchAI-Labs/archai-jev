@@ -5,6 +5,9 @@
 //! Heads return **raw** logits. The temperature is applied by `ask` through the calibration the
 //! model was loaded with, in one place.
 
+pub mod answer_letters;
+#[cfg(test)]
+mod answer_letters_tests;
 pub mod key_logprob;
 pub mod letters;
 #[cfg(test)]
@@ -18,6 +21,7 @@ use crate::error::Result;
 use crate::prompt::{Branch, QuestionSupport};
 use crate::schema::Question;
 
+pub use answer_letters::AnswerLettersHead;
 pub use key_logprob::KeyLogProbHead;
 pub use letters::LettersHead;
 pub use pointer::PointerHead;

@@ -14,6 +14,7 @@ mod pipeline;
 mod reject;
 mod robustness;
 mod source;
+mod spark;
 mod variant_choice;
 
 pub(crate) use harness::Harness;

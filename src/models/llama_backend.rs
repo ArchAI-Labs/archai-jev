@@ -14,10 +14,10 @@ use super::manifest::HeadSpec;
 use crate::convert::headpt::HeadPtReader;
 use crate::engine::llama::{LlamaConfig, LlamaForward};
 use crate::error::{Error, Result};
-use crate::heads::{Head, KeyLogProbHead, LettersHead, PointerHead};
+use crate::heads::{AnswerLettersHead, Head, KeyLogProbHead, LettersHead, PointerHead};
 use crate::model_scorer::ModelScorer;
 use crate::prefix::{Fingerprint, FingerprintParts};
-use crate::prompt::template::instantiate;
+use crate::prompt::template::{TemplateInputs, instantiate};
 use crate::prompt::{PromptTokenizer, Roles};
 
 /// The llama.cpp backend.
@@ -112,6 +112,19 @@ impl Backend for LlamaBackend {
                     tokens,
                 )
             }
+            HeadSpec::AnswerLetters {
+                letters,
+                max_options,
+                ..
+            } => {
+                let options = usize::try_from(*max_options).unwrap_or(usize::MAX);
+                (
+                    Box::new(AnswerLettersHead::new(letters, options)),
+                    false,
+                    options,
+                    1,
+                )
+            }
             HeadSpec::Pointer {
                 d_model, proj_dim, ..
             } => {
@@ -132,9 +145,12 @@ impl Backend for LlamaBackend {
         let template = instantiate(
             &m.template.id,
             m.template.version,
-            m.tasks.as_deref(),
-            max_options,
-            max_key_tokens,
+            &TemplateInputs {
+                tasks: m.tasks.as_deref(),
+                max_options,
+                max_key_tokens,
+                control_tokens: &m.tokenizer.control_tokens,
+            },
         )
         .map_err(Error::IncompatibleModel)?;
 
@@ -160,6 +176,11 @@ impl Backend for LlamaBackend {
             _ => forward,
         };
 
+        // a family with a sliding attention window keeps no prefix longer than the window
+        let params = family
+            .read_params(&m.architecture)
+            .map_err(Error::IncompatibleModel)?;
+        let snapshot_limit = (family.snapshot_max_tokens)(&params);
         let engine_text = forward.engine_fingerprint();
         let fingerprint = Fingerprint::new(&FingerprintParts {
             model: &checkpoint.manifest_sha256,
@@ -187,6 +208,7 @@ impl Backend for LlamaBackend {
                     .collect(),
             )
             .with_fingerprint(fingerprint)
+            .with_snapshot_limit(snapshot_limit)
             .with_prefix_cache(self.prefix_cache_bytes),
         );
         Ok(Engine {

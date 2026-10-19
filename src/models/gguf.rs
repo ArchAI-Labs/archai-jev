@@ -17,6 +17,7 @@ const MAX_STRING_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TENSORS: u64 = 100_000;
 const MAX_KEYS: u64 = 100_000;
 const MAX_DIMS: u32 = 4;
+const MAX_KEPT_BOOLS: u64 = 4096;
 
 /// A ggml tensor type id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +85,8 @@ impl GgmlType {
     }
 }
 
-/// A metadata value; arrays keep only their element type and length.
+/// A metadata value; arrays keep only their element type and length, except arrays of
+/// booleans, whose values a family may need (the per-layer attention pattern).
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetaValue {
     /// Any unsigned integer.
@@ -97,7 +99,9 @@ pub enum MetaValue {
     Bool(bool),
     /// A string.
     Str(String),
-    /// An array: element type id and length.
+    /// An array of booleans, with its values.
+    BoolArray(Vec<bool>),
+    /// Any other array: element type id and length.
     Array {
         /// GGUF type id of the elements.
         elem_type: u32,
@@ -249,6 +253,23 @@ fn read_value(c: &mut Cursor, ty: u32) -> Result<MetaValue, Incompat> {
         9 => {
             let elem_type = c.u32()?;
             let len = c.u64()?;
+            // the values of a boolean array are kept only when it is short (one flag per layer
+            // of a model); a longer one is skipped like any other array
+            if elem_type == 7 && len <= MAX_KEPT_BOOLS {
+                if len > c.remaining() {
+                    return Err(
+                        c.impossible(format!("an array of {len} booleans cannot fit in the file"))
+                    );
+                }
+                let n = usize::try_from(len).map_err(|_| c.unreadable("array too large"))?;
+                let mut bytes = vec![0u8; n];
+                c.r.read_exact(&mut bytes)
+                    .map_err(|e| c.unreadable(format!("read error: {e}")))?;
+                c.pos += len;
+                return Ok(MetaValue::BoolArray(
+                    bytes.into_iter().map(|b| b != 0).collect(),
+                ));
+            }
             if elem_type == 8 {
                 if len > c.remaining() / 8 {
                     return Err(
@@ -441,6 +462,85 @@ mod tests {
         assert_eq!(GgmlType(9999).byte_size(1), None);
         assert_eq!(GgmlType::Q8_0.name(), "Q8_0");
         assert_eq!(GgmlType(9999).name(), "type#9999");
+    }
+
+    #[cfg(feature = "testing")]
+    #[test]
+    fn an_array_of_booleans_keeps_its_values() {
+        use crate::models::testing::gguf_writer::{Meta, write};
+        let pattern = vec![true, true, true, false, true, false];
+        let bytes = write(
+            &[
+                ("a.pattern".to_string(), Meta::BoolArray(pattern.clone())),
+                ("a.names".to_string(), Meta::StrArray(vec!["x".into()])),
+            ],
+            &[],
+            32,
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("m.gguf");
+        std::fs::write(&path, &bytes).expect("write");
+        let info = read_header(&path).expect("header");
+        assert_eq!(info.get("a.pattern"), Some(&MetaValue::BoolArray(pattern)));
+        // other arrays still keep only type and length
+        assert_eq!(
+            info.get("a.names"),
+            Some(&MetaValue::Array {
+                elem_type: 8,
+                len: 1
+            })
+        );
+    }
+
+    #[cfg(feature = "testing")]
+    #[test]
+    fn a_long_array_of_booleans_is_skipped_not_kept() {
+        use crate::models::testing::gguf_writer::{Meta, write};
+        let bytes = write(
+            &[(
+                "a.flags".to_string(),
+                Meta::BoolArray(vec![true; usize::try_from(MAX_KEPT_BOOLS).unwrap() + 1]),
+            )],
+            &[],
+            32,
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("m.gguf");
+        std::fs::write(&path, &bytes).expect("write");
+        let info = read_header(&path).expect("header");
+        assert_eq!(
+            info.get("a.flags"),
+            Some(&MetaValue::Array {
+                elem_type: 7,
+                len: MAX_KEPT_BOOLS + 1
+            })
+        );
+    }
+
+    #[cfg(feature = "testing")]
+    #[test]
+    fn an_array_of_booleans_longer_than_the_file_is_impossible() {
+        use crate::models::testing::gguf_writer::{Meta, write};
+        let mut bytes = write(
+            &[("a.pattern".to_string(), Meta::BoolArray(vec![true]))],
+            &[],
+            32,
+        );
+        // the array length sits after the key, the value type (9) and the element type (7)
+        let key_end = bytes
+            .windows(9)
+            .position(|w| w == b"a.pattern")
+            .expect("the key")
+            + 9;
+        let at = key_end + 8;
+        bytes[at..at + 8].copy_from_slice(&4000u64.to_le_bytes());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("m.gguf");
+        std::fs::write(&path, &bytes).expect("write");
+        assert!(matches!(
+            read_header(&path),
+            Err(Incompat::GgufImpossible { .. })
+        ));
     }
 
     #[test]

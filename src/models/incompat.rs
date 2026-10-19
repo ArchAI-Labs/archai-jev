@@ -202,6 +202,20 @@ pub enum Incompat {
         label: String,
         ids: Vec<u32>,
     },
+    /// The tokenizer matches its control tokens in a way the neutralisation cannot follow: the
+    /// text is normalised first, or an added token is matched after normalisation or with its
+    /// neighbouring spaces eaten.
+    ControlTokenMatching {
+        /// What is wrong, naming the token or the normalizer.
+        detail: String,
+    },
+    /// The control tokens a manifest lists are not the added tokens of its `tokenizer.json`.
+    ControlTokensMismatch {
+        /// In the tokenizer but not in the manifest: text could still produce them.
+        unlisted: Vec<String>,
+        /// In the manifest but not in the tokenizer.
+        unknown: Vec<String>,
+    },
     // ---- stage 6: head weights ----
     HeadWeights {
         detail: String,
@@ -481,6 +495,16 @@ impl fmt::Display for Incompat {
                 f,
                 "answer label '{label}' encodes to {} tokens {ids:?}, expected exactly one token",
                 ids.len()
+            ),
+            I::ControlTokensMismatch { unlisted, unknown } => write!(
+                f,
+                "tokenizer.control_tokens must be exactly the added tokens of tokenizer.json; not listed: {}; listed but not in the tokenizer: {}",
+                list(unlisted),
+                list(unknown)
+            ),
+            I::ControlTokenMatching { detail } => write!(
+                f,
+                "the tokenizer matches its control tokens in a way that exact-text neutralisation cannot follow: {detail}"
             ),
             I::HeadWeights { detail } => {
                 write!(f, "the decision head weights are not valid: {detail}")

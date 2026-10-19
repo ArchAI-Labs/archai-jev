@@ -70,6 +70,9 @@ pub struct FakeForward {
     vocab: u32,
     sensitive: bool,
     thread_sensitive: bool,
+    /// A snapshot of more tokens than this restores to a session whose numbers differ from a
+    /// cold decode (what a sliding attention window does to a saved prefix, spec 010b).
+    lossy_over: Option<usize>,
     pool: SlotPool,
     in_flight: AtomicUsize,
     stats: Mutex<Stats>,
@@ -113,6 +116,7 @@ impl FakeForward {
             vocab: 64,
             sensitive: false,
             thread_sensitive: false,
+            lossy_over: None,
             pool: SlotPool::new(1, 1),
             in_flight: AtomicUsize::new(0),
             stats: Mutex::new(Stats::default()),
@@ -132,6 +136,15 @@ impl FakeForward {
     #[must_use]
     pub fn partition_sensitive(mut self) -> Self {
         self.sensitive = true;
+        self
+    }
+
+    /// Make a restored snapshot of more than `tokens` tokens give other numbers than a cold
+    /// decode of the same prefix, as a model with a sliding attention window does: a test that
+    /// says "cold, warm and no cache agree" can then fail.
+    #[must_use]
+    pub fn lossy_snapshots_over(mut self, tokens: usize) -> Self {
+        self.lossy_over = Some(tokens);
         self
     }
 
@@ -245,6 +258,8 @@ struct FakeSession<'a> {
     /// The shared ids and the sizes of the decodes that produced them.
     state: Vec<u32>,
     sizes: Vec<usize>,
+    /// A lossy snapshot was restored: every number of this session is another one.
+    degraded: bool,
     threads: usize,
     _slot: Slot<'a>,
 }
@@ -289,7 +304,8 @@ impl FakeSession<'_> {
         } else {
             0
         };
-        let salt = self.owner.salt(&sizes) ^ thread_salt;
+        let degraded_salt = if self.degraded { 0xdead_beef_u64 } else { 0 };
+        let salt = self.owner.salt(&sizes) ^ thread_salt ^ degraded_salt;
         let base = self.state.len();
         let mut out = Vec::with_capacity(outputs.len());
         for spec in outputs {
@@ -368,6 +384,7 @@ impl Session for FakeSession<'_> {
             })?;
         self.state = saved.ids.clone();
         self.sizes = saved.sizes.clone();
+        self.degraded = self.owner.lossy_over.is_some_and(|n| saved.ids.len() > n);
         self.owner.stats.lock().unwrap().restores += 1;
         Ok(())
     }
@@ -432,6 +449,7 @@ impl Forward for FakeForward {
             owner: self,
             state: Vec::new(),
             sizes: Vec::new(),
+            degraded: false,
             threads: slot.threads(),
             _slot: slot,
         }))

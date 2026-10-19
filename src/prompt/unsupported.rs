@@ -72,6 +72,25 @@ pub enum Unsupported {
     },
     /// The tokenizer failed on a piece of text (an internal fault, not the user's mistake).
     Untokenizable { segment: String, cause: String },
+    /// A question with fewer options than the model needs to choose among (spec 010b).
+    TooFewOptions {
+        question: String,
+        min: u64,
+        got: u64,
+    },
+    /// A text the model has to read is empty once its edges are stripped (spec 010b).
+    EmptyText { question: String, what: String },
+    /// A text the model reads as plain text was given as a structured value (spec 010b): the
+    /// format of the model has no way to write it, so nothing is invented.
+    NotText { question: String, what: String },
+    /// Two options with the same description: the model sees only letters and descriptions, so
+    /// it could not tell them apart (spec 010b).
+    DuplicateDescription {
+        question: String,
+        a: String,
+        b: String,
+        description: String,
+    },
 }
 
 impl fmt::Display for Unsupported {
@@ -166,6 +185,34 @@ impl fmt::Display for Unsupported {
             Unsupported::Untokenizable { segment, cause } => {
                 write!(f, "cannot tokenize the {segment}: {cause}")
             }
+            Unsupported::TooFewOptions { question, min, got } => write!(
+                f,
+                "question {}: the model needs at least {min} options to choose among, got {got}",
+                quote(question)
+            ),
+            Unsupported::EmptyText { question, what } => write!(
+                f,
+                "question {}: the {what} is empty once its leading and trailing whitespace is removed; the model needs text to read",
+                quote(question)
+            ),
+            Unsupported::NotText { question, what } => write!(
+                f,
+                "question {}: the {what} is a list or an object, but this model reads plain text there; write it as a string",
+                quote(question)
+            ),
+            Unsupported::DuplicateDescription {
+                question,
+                a,
+                b,
+                description,
+            } => write!(
+                f,
+                "question {}: the options {} and {} have the same description ({}), and the model sees only letters and descriptions, so it could not tell them apart; give each its own description",
+                quote(question),
+                quote(a),
+                quote(b),
+                quote(description)
+            ),
         }
     }
 }

@@ -9,6 +9,7 @@ use super::di::{DECISION_INDEX_CHATML_V1, DecisionIndexChatMl};
 use super::kev::{KEV_V1, KevV1};
 use super::limits::RequestLimits;
 use super::prompt::Prompt;
+use super::spark::{SPARK_DECISIONS_V3, SparkDecisionsV3};
 use super::tasks;
 use super::tokenize::PromptTokenizer;
 use crate::error::Result;
@@ -43,34 +44,58 @@ pub trait Template: Send + Sync {
 
 /// The template called `id` at `version`, if it exists (without the tasks of any model).
 pub fn lookup(id: &str, version: u64) -> Option<&'static dyn Template> {
-    let all: [&'static dyn Template; 3] = [&KEV_V1, &CHATML_LETTERS_V1, &DECISION_INDEX_CHATML_V1];
+    let all: [&'static dyn Template; 4] = [
+        &KEV_V1,
+        &CHATML_LETTERS_V1,
+        &DECISION_INDEX_CHATML_V1,
+        &SPARK_DECISIONS_V3,
+    ];
     all.into_iter()
         .find(|t| t.id() == id && t.version() == version)
 }
 
-/// The template of a model: the one called `id` at `version`, with the tasks of the manifest
-/// (only `chatml-letters` reads them) and the most tokens of an option key (only
-/// `decision-index-chatml` reads it).
+/// What a model gives its template, besides the id and the version: the parts of the manifest
+/// that some templates read and others ignore.
+pub struct TemplateInputs<'a> {
+    /// The closed task set of the manifest (only `chatml-letters` reads it).
+    pub tasks: Option<&'a [Task]>,
+    /// The most options of a question the head answers.
+    pub max_options: usize,
+    /// The most tokens of an option key (only `decision-index-chatml` reads it).
+    pub max_key_tokens: usize,
+    /// Every token of the tokenizer the text of a request must not be able to write (only
+    /// `spark-decisions` reads it).
+    pub control_tokens: &'a [String],
+}
+
+/// The template of a model: the one called `id` at `version`, with what the model gives it.
 ///
 /// # Errors
 /// [`Incompat`] if the template does not exist or the tasks are not valid for it.
 pub fn instantiate(
     id: &str,
     version: u64,
-    tasks: Option<&[Task]>,
-    max_options: usize,
-    max_key_tokens: usize,
+    inputs: &TemplateInputs<'_>,
 ) -> std::result::Result<Box<dyn Template>, Incompat> {
     match (id, version) {
         ("kev", 1) => Ok(Box::new(KevV1)),
         ("chatml-letters", 1) => {
-            let specs = tasks.map(|t| tasks::parse(t, max_options)).transpose()?;
+            let specs = inputs
+                .tasks
+                .map(|t| tasks::parse(t, inputs.max_options))
+                .transpose()?;
             Ok(Box::new(ChatMlLetters::new(specs)))
         }
-        ("decision-index-chatml", 1) => Ok(Box::new(DecisionIndexChatMl::new(max_key_tokens))),
+        ("decision-index-chatml", 1) => {
+            Ok(Box::new(DecisionIndexChatMl::new(inputs.max_key_tokens)))
+        }
+        ("spark-decisions", 3) => Ok(Box::new(SparkDecisionsV3::new(
+            inputs.control_tokens.to_vec(),
+        ))),
         _ => Err(Incompat::TemplateMismatch {
             family: String::new(),
-            expected: "kev v1, chatml-letters v1 or decision-index-chatml v1".to_string(),
+            expected: "kev v1, chatml-letters v1, decision-index-chatml v1 or spark-decisions v3"
+                .to_string(),
             got: format!("{id} v{version}"),
         }),
     }

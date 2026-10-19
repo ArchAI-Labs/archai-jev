@@ -82,6 +82,14 @@ pub fn lookup(family: &str, dtype: &str, reference: Reference) -> Option<Toleran
             logit: None,
             p: 0.2,
         },
+        // spec 010b, spike S13 (D62): the Q8_0 files on this engine against the reference runtime
+        // at the same precision, on the path with cuts: largest gap 0.064 (1.7B, 108 questions)
+        // and 0.048 (4B). 0.10 is 1.6x the largest, as for the keys head (D54). Only Q8_0 was
+        // measured; no other precision has a row.
+        ("spark2_5-letters", "q8_0", FullPrecision) => Tolerance {
+            logit: None,
+            p: 0.1,
+        },
         #[cfg(feature = "testing")]
         ("test-fake" | "test-kev", "f32" | "q8_0", FullPrecision) => Tolerance {
             logit: Some(1e-3),
@@ -120,6 +128,7 @@ pub fn all() -> Vec<(&'static str, &'static str, Reference)> {
         ("qwen2-keys", "f32", Reference::FullPrecision),
         ("qwen2-keys", "bf16", Reference::FullPrecision),
         ("qwen2-keys", "q8_0", Reference::FullPrecision),
+        ("spark2_5-letters", "q8_0", Reference::FullPrecision),
     ];
     #[cfg(feature = "testing")]
     rows.extend([
@@ -170,6 +179,18 @@ mod tests {
                 p: 0.1
             })
         );
+        assert_eq!(
+            lookup("spark2_5-letters", "q8_0", FP),
+            Some(Tolerance {
+                logit: None,
+                p: 0.1
+            })
+        );
+        // only the precision that was measured has a row
+        for other in ["f32", "bf16", "f16", "q4_k_m", "q6_k"] {
+            assert_eq!(lookup("spark2_5-letters", other, FP), None, "{other}");
+        }
+        assert_eq!(lookup("spark2_5-letters", "q8_0", Reference::Engine), None);
         // a K-quant has a row only behind the study feature, and then one that refuses nothing
         #[cfg(not(feature = "quant-study"))]
         assert_eq!(lookup("qwen2-letters", "q4_k_m", FP), None);

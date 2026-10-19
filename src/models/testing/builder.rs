@@ -52,6 +52,7 @@ pub struct Builder {
     n_ff: u64,
     n_heads: u64,
     n_kv_heads: u64,
+    head_dim: u64,
     n_vocab: u64,
     tie: bool,
     context_length: u32,
@@ -87,6 +88,7 @@ impl Builder {
             n_ff: 64,
             n_heads: 2,
             n_kv_heads: 1,
+            head_dim: 32,
             n_vocab: 32,
             tie: true,
             context_length: 2048,
@@ -116,6 +118,16 @@ impl Builder {
         let mut b = Builder::tiny();
         b.family = "test-kev".to_string();
         b.dtype = "f32".to_string();
+        b
+    }
+
+    /// A tiny checkpoint of `spark2_5-letters` (letters at the end, `spark-decisions` template):
+    /// four layers, so that the attention pattern has three sliding layers and a full one.
+    pub fn tiny_spark() -> Self {
+        let mut b = Builder::tiny();
+        b.family = "spark2_5-letters".to_string();
+        b.n_layers = 4;
+        b.n_vocab = 64;
         b
     }
 
@@ -215,9 +227,32 @@ impl Builder {
         })
     }
 
+    /// Id of the letter `A` in the tiny spark tokenizer (after `<unk>` and the six roles).
+    const SPARK_LETTER_BASE: u64 = 7;
+
+    fn is_spark(&self) -> bool {
+        self.family == "spark2_5-letters"
+    }
+
+    /// The sliding window of the tiny spark model (any value: no forward ever runs).
+    const SPARK_WINDOW: u64 = 16;
+
     fn params(&self) -> ArchParams {
         let i = |x: u64| ParamValue::Int(x);
-        if self.family == "test-fake" || self.family == "test-kev" {
+        if self.is_spark() {
+            ArchParams::from_pairs(vec![
+                ("n_layers".to_string(), i(self.n_layers)),
+                ("n_embd".to_string(), i(self.n_embd)),
+                ("n_ff".to_string(), i(self.n_ff)),
+                ("n_heads".to_string(), i(self.n_heads)),
+                ("n_kv_heads".to_string(), i(self.n_kv_heads)),
+                ("head_dim".to_string(), i(self.head_dim)),
+                ("n_vocab".to_string(), i(self.n_vocab)),
+                ("tie_embeddings".to_string(), ParamValue::Bool(self.tie)),
+                ("sliding_window".to_string(), i(Self::SPARK_WINDOW)),
+                ("full_attention_every".to_string(), i(4)),
+            ])
+        } else if self.family == "test-fake" || self.family == "test-kev" {
             ArchParams::from_pairs(vec![
                 ("n_embd".to_string(), i(self.n_embd)),
                 ("n_vocab".to_string(), i(self.n_vocab)),
@@ -237,7 +272,18 @@ impl Builder {
 
     fn architecture_json(&self, arch: &str) -> Json {
         let mut pairs = vec![("name", s(arch))];
-        if self.family == "test-fake" || self.family == "test-kev" {
+        if self.is_spark() {
+            pairs.push(("n_layers", n(self.n_layers)));
+            pairs.push(("n_embd", n(self.n_embd)));
+            pairs.push(("n_ff", n(self.n_ff)));
+            pairs.push(("n_heads", n(self.n_heads)));
+            pairs.push(("n_kv_heads", n(self.n_kv_heads)));
+            pairs.push(("head_dim", n(self.head_dim)));
+            pairs.push(("n_vocab", n(self.n_vocab)));
+            pairs.push(("tie_embeddings", b(self.tie)));
+            pairs.push(("sliding_window", n(Self::SPARK_WINDOW)));
+            pairs.push(("full_attention_every", n(4)));
+        } else if self.family == "test-fake" || self.family == "test-kev" {
             pairs.push(("n_embd", n(self.n_embd)));
             pairs.push(("n_vocab", n(self.n_vocab)));
         } else {
@@ -270,6 +316,7 @@ impl Builder {
                 let m = match v {
                     families::MetaExpect::Str(x) => Meta::Str(x),
                     families::MetaExpect::UInt(x) => Meta::U32(u32::try_from(x).unwrap()),
+                    families::MetaExpect::BoolArray(x) => Meta::BoolArray(x),
                 };
                 (k, m)
             })
@@ -298,13 +345,24 @@ impl Builder {
     fn tokenizer_json(&self) -> Json {
         let family = families::lookup(&self.family).expect("family");
         let mut vocab: Vec<(String, Json)> = vec![("<unk>".to_string(), n(0))];
-        for (i, w) in ["A", "B", "C", "D", "TRUE", "FALSE"].iter().enumerate() {
-            vocab.push(((*w).to_string(), n(3 + i as u64)));
-        }
+        // the roles take ids 1.., the spark letters follow them, the other families' words
+        // sit at 3..8 (where their head reads them)
+        let first_free = if self.is_spark() {
+            vocab.extend((0..26u8).map(|i| {
+                let letter = char::from(b'A' + i).to_string();
+                (letter, n(Self::SPARK_LETTER_BASE + u64::from(i)))
+            }));
+            Self::SPARK_LETTER_BASE + 26
+        } else {
+            for (i, w) in ["A", "B", "C", "D", "TRUE", "FALSE"].iter().enumerate() {
+                vocab.push(((*w).to_string(), n(3 + i as u64)));
+            }
+            9
+        };
         for (i, role) in family.special_roles.iter().enumerate() {
             vocab.push((role_text(role), n(1 + i as u64)));
         }
-        for i in 9..self.n_vocab {
+        for i in first_free..self.n_vocab {
             vocab.push((format!("w{i}"), n(i)));
         }
         let added: Vec<Json> = family
@@ -357,6 +415,22 @@ impl Builder {
             ]);
         }
         let target = |label: &str, id: u64| obj(vec![("label", s(label)), ("id", n(id))]);
+        if kind == "answer_letters" {
+            let letters = (0..26u8)
+                .map(|i| {
+                    target(
+                        &char::from(b'A' + i).to_string(),
+                        Self::SPARK_LETTER_BASE + u64::from(i),
+                    )
+                })
+                .collect();
+            return obj(vec![
+                ("kind", s("answer_letters")),
+                ("rule", s("restricted_softmax")),
+                ("letters", arr(letters)),
+                ("max_options", n(26)),
+            ]);
+        }
         obj(vec![
             ("kind", s("letters")),
             ("rule", s("restricted_softmax")),
@@ -374,6 +448,29 @@ impl Builder {
                 obj(vec![("no", target("FALSE", 8)), ("yes", target("TRUE", 7))]),
             ),
         ])
+    }
+
+    /// The members of the manifest's `tokenizer` object; a family with control tokens lists
+    /// every added token of the tokenizer, as the script that writes real manifests does.
+    fn tokenizer_pairs(
+        &self,
+        family: &families::Family,
+        tok_bytes: &[u8],
+        roles: Vec<(&'static str, Json)>,
+    ) -> Vec<(&'static str, Json)> {
+        let mut pairs = vec![
+            ("file", self.file_entry("tokenizer.json", tok_bytes)),
+            ("special_tokens", obj(roles)),
+        ];
+        if self.is_spark() {
+            let listed = family
+                .special_roles
+                .iter()
+                .map(|r| s(&role_text(r)))
+                .collect();
+            pairs.push(("control_tokens", arr(listed)));
+        }
+        pairs
     }
 
     fn file_entry(&self, path: &str, bytes: &[u8]) -> Json {
@@ -579,10 +676,7 @@ impl Builder {
             ),
             (
                 "tokenizer",
-                obj(vec![
-                    ("file", self.file_entry("tokenizer.json", &tok_bytes)),
-                    ("special_tokens", obj(roles)),
-                ]),
+                obj(self.tokenizer_pairs(family, &tok_bytes, roles)),
             ),
             ("max_context", n(self.max_context)),
             (
@@ -617,6 +711,15 @@ impl Builder {
                 ])]),
             ),
         ]);
+        if self.is_spark() {
+            set(
+                &mut manifest,
+                "notice",
+                s(
+                    "A third-party general model: not calibrated, answers a multiple-choice question with a letter.",
+                ),
+            );
+        }
         for e in &self.manifest_edits {
             e(&mut manifest);
         }

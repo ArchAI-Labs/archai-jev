@@ -12,6 +12,7 @@ Two promises are checked without the model file:
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -119,3 +120,48 @@ def test_the_card_example_is_not_in_the_demos_either() -> None:
     for path in demos:
         text = path.read_text(encoding="utf-8")
         assert not CARD_EXAMPLE.search(text), f"{path.name} uses the card example"
+
+
+# The third-party model of the letters family and its author are named by no versioned file
+# (the family is generic: its tokenizer and template are all the library knows). The words are
+# built from pieces so that this file does not name them either.
+THIRD_PARTY_NAMES = re.compile(
+    "|".join(["ri" + "zzo", "XH" + "Token", "Spark" + "-X"]), re.IGNORECASE
+)
+
+
+def _versioned_files() -> list[Path]:
+    """Every file git tracks, plus the ones it would track (new, not ignored)."""
+    try:
+        listing = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        pytest.skip("not a git checkout")
+    names = [n for n in listing.stdout.decode("utf-8").split("\0") if n]
+    return [ROOT / n for n in names]
+
+
+def test_no_versioned_file_names_the_third_party_model() -> None:
+    files = _versioned_files()
+    assert len(files) > 100, "the listing of the versioned files is suspiciously short"
+    offenders: list[str] = []
+    for path in files:
+        if not path.is_file():  # deleted in the working tree
+            continue
+        data = path.read_bytes()
+        if b"\0" in data[:4096]:  # a binary file
+            continue
+        if THIRD_PARTY_NAMES.search(data.decode("utf-8", "ignore")):
+            offenders.append(str(path.relative_to(ROOT)))
+    assert not offenders, f"these files name the third-party model: {offenders}"
+
+
+def test_the_name_check_can_fail() -> None:
+    # Guards the test above: the pattern finds each word, in any case, inside a sentence.
+    for word in ["ri" + "zzo", "XH" + "Token", "Spark" + "-X"]:
+        assert THIRD_PARTY_NAMES.search(f"a model called {word.upper()} here")
+    assert not THIRD_PARTY_NAMES.search("spark2_5 is the name of an architecture")

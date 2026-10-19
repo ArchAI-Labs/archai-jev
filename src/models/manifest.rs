@@ -38,6 +38,9 @@ pub struct TokenizerSpec {
     pub file: FileEntry,
     /// Role (as named by the template) to token.
     pub special_tokens: Vec<(String, SpecialToken)>,
+    /// Every token of the tokenizer that the text of a request must not be able to produce
+    /// (`control_tokens`, only for heads whose template neutralises them).
+    pub control_tokens: Vec<String>,
 }
 
 /// One answer letter or word and its token id.
@@ -71,6 +74,17 @@ pub enum HeadSpec {
         /// The most tokens of an option key.
         max_key_tokens: u64,
     },
+    /// Read the logits of the letters `A`, `B`, ... at the last position (spec 010b): restricted
+    /// softmax over the letters of the question. The model sees only the letter and a
+    /// description, so the targets are positional.
+    AnswerLetters {
+        /// Only `restricted_softmax` exists.
+        rule: String,
+        /// The letters `A`, `B`, ... in order, with their token ids.
+        letters: Vec<Target>,
+        /// The most options of a question (at most `letters.len()`).
+        max_options: u64,
+    },
     /// Kev's pointer head: two projections and a dot product.
     Pointer {
         /// Hidden size of the backbone.
@@ -88,7 +102,8 @@ impl HeadSpec {
     pub fn max_options(&self) -> Option<u64> {
         match self {
             HeadSpec::Letters { choice_targets, .. } => Some(choice_targets.len() as u64),
-            HeadSpec::KeyLogProb { max_options, .. } => Some(*max_options),
+            HeadSpec::KeyLogProb { max_options, .. }
+            | HeadSpec::AnswerLetters { max_options, .. } => Some(*max_options),
             HeadSpec::Pointer { .. } => None,
         }
     }
@@ -106,6 +121,7 @@ impl HeadSpec {
         match self {
             HeadSpec::Letters { .. } => "letters",
             HeadSpec::KeyLogProb { .. } => "key_logprob",
+            HeadSpec::AnswerLetters { .. } => "answer_letters",
             HeadSpec::Pointer { .. } => "pointer",
         }
     }
@@ -340,6 +356,66 @@ fn target(json: &Json, path: &str) -> Result<Target, Incompat> {
     Ok(Target { label, id })
 }
 
+/// The letters of an `answer_letters` head are `A`, `B`, ... in order: the option at position
+/// *i* of a question reads the *i*-th letter, so a letter out of place would read another answer.
+fn parse_answer_letters(h: &mut Obj<'_>) -> Result<HeadSpec, Incompat> {
+    let rule = h.str("rule")?.to_string();
+    if rule != "restricted_softmax" {
+        return Err(bad(
+            &h.child_path("rule"),
+            format!("must be \"restricted_softmax\", got {rule:?}"),
+        ));
+    }
+    let base = h.child_path("letters");
+    let arr = h.arr("letters")?;
+    if !(1..=26).contains(&arr.len()) {
+        return Err(bad(
+            &base,
+            format!("must have from 1 to 26 letters, got {}", arr.len()),
+        ));
+    }
+    let mut letters = Vec::with_capacity(arr.len());
+    for (i, t) in arr.iter().enumerate() {
+        let path = format!("{base}[{i}]");
+        let letter = target(t, &path)?;
+        let want = char::from(b'A' + u8::try_from(i).unwrap_or(0)).to_string();
+        if letter.label != want {
+            return Err(bad(
+                &format!("{path}.label"),
+                format!(
+                    "must be {want:?} (the letters go from A in order), got {:?}",
+                    letter.label
+                ),
+            ));
+        }
+        if let Some(other) = letters.iter().find(|o: &&Target| o.id == letter.id) {
+            return Err(bad(
+                &format!("{path}.id"),
+                format!(
+                    "the id {} is already the one of {:?}",
+                    letter.id, other.label
+                ),
+            ));
+        }
+        letters.push(letter);
+    }
+    let max_options = h.u64("max_options")?;
+    if !(1..=letters.len() as u64).contains(&max_options) {
+        return Err(bad(
+            &h.child_path("max_options"),
+            format!(
+                "must be from 1 to the number of letters ({}), got {max_options}",
+                letters.len()
+            ),
+        ));
+    }
+    Ok(HeadSpec::AnswerLetters {
+        rule,
+        letters,
+        max_options,
+    })
+}
+
 fn parse_head(o: &mut Obj<'_>, family: &str, registry: bool) -> Result<HeadSpec, Incompat> {
     let mut h = o.obj("head")?;
     let kind = h.str("kind")?;
@@ -410,6 +486,7 @@ fn parse_head(o: &mut Obj<'_>, family: &str, registry: bool) -> Result<HeadSpec,
                 max_key_tokens,
             }
         }
+        "answer_letters" => parse_answer_letters(&mut h)?,
         "pointer" => {
             let d_model = h.u64("d_model")?;
             let proj_dim = h.u64("proj_dim")?;
@@ -424,7 +501,7 @@ fn parse_head(o: &mut Obj<'_>, family: &str, registry: bool) -> Result<HeadSpec,
         other => {
             return Err(Incompat::HeadMismatch {
                 family: family.to_string(),
-                expected: "one of: letters, key_logprob, pointer".to_string(),
+                expected: "one of: letters, key_logprob, answer_letters, pointer".to_string(),
                 got: other.to_string(),
             });
         }
@@ -619,6 +696,40 @@ fn parse_variants(o: &mut Obj<'_>, registry: bool) -> Result<Vec<Variant>, Incom
     Ok(out)
 }
 
+/// `tokenizer.control_tokens`: absent means none; otherwise distinct, non-empty strings.
+fn parse_control_tokens(tk: &mut Obj<'_>) -> Result<Vec<String>, Incompat> {
+    let path = tk.child_path("control_tokens");
+    let Some(value) = tk.opt("control_tokens") else {
+        return Ok(Vec::new());
+    };
+    let Json::Array(items) = value else {
+        return Err(bad(
+            &path,
+            format!("must be an array of strings, got {}", value.kind()),
+        ));
+    };
+    let mut out: Vec<String> = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let Json::Str(text) = item else {
+            return Err(bad(
+                &format!("{path}[{i}]"),
+                format!("must be a string, got {}", item.kind()),
+            ));
+        };
+        if let Some(why) = crate::prompt::sanitize::control_token_problem(text) {
+            return Err(bad(&format!("{path}[{i}]"), format!("{text:?} {why}")));
+        }
+        if out.contains(text) {
+            return Err(bad(
+                &format!("{path}[{i}]"),
+                format!("{text:?} appears twice"),
+            ));
+        }
+        out.push(text.clone());
+    }
+    Ok(out)
+}
+
 fn parse_tasks(o: &mut Obj<'_>) -> Result<Option<Vec<Task>>, Incompat> {
     match o.req("tasks")? {
         Json::Null => Ok(None),
@@ -740,10 +851,12 @@ impl Manifest {
             to.finish()?;
             special_tokens.push((role.clone(), SpecialToken { text, id }));
         }
+        let control_tokens = parse_control_tokens(&mut tk)?;
         tk.finish()?;
         let tokenizer = TokenizerSpec {
             file,
             special_tokens,
+            control_tokens,
         };
 
         let max_context = o.u64("max_context")?;

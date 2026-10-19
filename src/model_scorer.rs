@@ -33,6 +33,10 @@ pub struct ModelScorer {
     /// Memory the prefix cache may use, in bytes. `0` is the plain path: every question decodes
     /// its whole row, as in 0.1.0.
     prefix_limit: u64,
+    /// The longest prefix, in tokens, that may be saved between requests and restored: a family
+    /// with a sliding attention window cannot restore a longer one with the numbers of a cold
+    /// decode (spec 010b). `None`: any length.
+    snapshot_limit: Option<usize>,
     /// Who computed the numbers a saved prefix holds.
     fingerprint: Fingerprint,
     /// The saved prefixes. Taken only while the engine session (which holds the engine's lock)
@@ -51,6 +55,8 @@ pub(crate) enum Mutant {
     /// The same, only for the part after a restored prefix: what a cache hit would do if it did
     /// not keep the partition.
     NonCanonicalOnHit,
+    /// Save and restore prefixes longer than the limit of the family.
+    KeepsBeyondTheLimit,
 }
 
 /// What one request produced.
@@ -103,6 +109,7 @@ impl ModelScorer {
             max_context,
             question_types,
             prefix_limit: 0,
+            snapshot_limit: None,
             fingerprint,
             store: Mutex::new(PrefixStore::new(0)),
             #[cfg(test)]
@@ -118,6 +125,24 @@ impl ModelScorer {
         let limit = usize::try_from(limit_bytes).unwrap_or(usize::MAX);
         self.store = Mutex::new(PrefixStore::new(limit));
         self
+    }
+
+    /// Save and restore only prefixes of at most `tokens` tokens (the family's
+    /// `snapshot_max_tokens`); a longer shared prefix is still decoded once per request and
+    /// copied to its questions, but never kept for another request. `None`: no limit.
+    #[must_use]
+    pub fn with_snapshot_limit(mut self, tokens: Option<u64>) -> Self {
+        self.snapshot_limit = tokens.map(|t| usize::try_from(t).unwrap_or(usize::MAX));
+        self
+    }
+
+    /// Whether a prefix of `tokens` tokens may be saved or restored.
+    fn may_keep(&self, tokens: usize) -> bool {
+        #[cfg(test)]
+        if self.mutant == Some(Mutant::KeepsBeyondTheLimit) {
+            return true;
+        }
+        self.snapshot_limit.is_none_or(|limit| tokens <= limit)
     }
 
     /// Who computed the numbers: the identity a saved prefix is tied to (the backend builds it
@@ -329,6 +354,9 @@ mod key_tests;
 
 #[cfg(test)]
 mod pool_tests;
+
+#[cfg(test)]
+mod window_tests;
 
 #[cfg(test)]
 mod tests {

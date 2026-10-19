@@ -110,6 +110,36 @@ fn check_variant(
     check_calibration(&v.calibration)
 }
 
+/// `tokenizer.control_tokens` and `notice` go with the heads whose template neutralises control
+/// tokens: required there (the list is what stops a request from forging the prompt structure,
+/// the notice is what tells the user the model is third-party and uncalibrated), and refused
+/// everywhere else (a list nobody applies would only look like protection).
+fn check_control_tokens(m: &Manifest, family: &Family) -> Result<(), Incompat> {
+    let listed = !m.tokenizer.control_tokens.is_empty();
+    if family.head_kind == "answer_letters" {
+        if !listed {
+            return Err(Incompat::ManifestMissingField {
+                path: "tokenizer.control_tokens".to_string(),
+            });
+        }
+        if m.notice.as_deref().is_none_or(|n| n.trim().is_empty()) {
+            return Err(Incompat::ManifestBadValue {
+                path: "notice".to_string(),
+                detail: format!(
+                    "the family {} needs a notice saying what the model is and is not",
+                    family.key
+                ),
+            });
+        }
+    } else if listed {
+        return Err(Incompat::ManifestBadValue {
+            path: "tokenizer.control_tokens".to_string(),
+            detail: format!("the family {} does not use control tokens", family.key),
+        });
+    }
+    Ok(())
+}
+
 fn check_tasks(m: &Manifest) -> Result<(), Incompat> {
     let Some(tasks) = &m.tasks else { return Ok(()) };
     let bad = |index: usize, detail: String| Incompat::BadTasks { index, detail };
@@ -178,7 +208,8 @@ pub fn semantics(m: &Manifest, converter_kinds: &[String]) -> Result<Resolved, I
         });
     }
     check_tasks(m)?;
-    if family.head_kind == "key_logprob" && m.tasks.is_some() {
+    check_control_tokens(m, family)?;
+    if matches!(family.head_kind, "key_logprob" | "answer_letters") && m.tasks.is_some() {
         // the family answers any Choice/YesNo: a closed set of tasks has nothing to match
         return Err(Incompat::TasksNotSupported {
             family: family.key.to_string(),
@@ -252,6 +283,7 @@ pub fn gguf_vs_manifest(
         let ok = match (&expect, got) {
             (MetaExpect::Str(s), Some(MetaValue::Str(g))) => s == g,
             (MetaExpect::UInt(n), Some(g)) => as_uint(g) == Some(*n),
+            (MetaExpect::BoolArray(want), Some(MetaValue::BoolArray(g))) => want == g,
             _ => false,
         };
         if !ok {
@@ -260,6 +292,7 @@ pub fn gguf_vs_manifest(
                 expected: match expect {
                     MetaExpect::Str(s) => format!("{s:?}"),
                     MetaExpect::UInt(n) => n.to_string(),
+                    MetaExpect::BoolArray(v) => format!("{v:?}"),
                 },
                 got: describe(got),
             });

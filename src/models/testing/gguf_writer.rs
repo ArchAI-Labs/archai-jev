@@ -10,6 +10,7 @@ pub enum Meta {
     U64(u64),
     Str(String),
     StrArray(Vec<String>),
+    BoolArray(Vec<bool>),
 }
 
 /// A tensor to write: descriptor only, data is zeros.
@@ -38,6 +39,12 @@ fn put_meta(out: &mut Vec<u8>, v: &Meta) {
         Meta::Str(s) => {
             out.extend_from_slice(&8u32.to_le_bytes());
             put_str(out, s);
+        }
+        Meta::BoolArray(items) => {
+            out.extend_from_slice(&9u32.to_le_bytes());
+            out.extend_from_slice(&7u32.to_le_bytes());
+            out.extend_from_slice(&(items.len() as u64).to_le_bytes());
+            out.extend(items.iter().map(|b| u8::from(*b)));
         }
         Meta::StrArray(items) => {
             out.extend_from_slice(&9u32.to_le_bytes());
