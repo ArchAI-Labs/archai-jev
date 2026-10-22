@@ -8,6 +8,7 @@ from __future__ import annotations
 
 __all__ = [
     "CalibrationError",
+    "DeviceFallbackWarning",
     "DeviceUnavailableError",
     "IncompatibleModelError",
     "InferenceError",
@@ -95,6 +96,15 @@ class DeviceUnavailableError(JevError, RuntimeError):
     it. The message lists what the build contains."""
 
 
+class DeviceFallbackWarning(UserWarning):
+    """``device="auto"`` used the CPU although a GPU backend is compiled in, because the device
+    was missing, had no verified tolerance for the model, or could not run it (for example not
+    enough memory). The message says why and ``Jev.model_info.device`` is ``"cpu"``. Nothing is
+    wrong with the answers: they are the CPU's. A GPU whose numbers fail the self-check is never
+    replaced by the CPU: that is :class:`ModelVerificationError`. Not emitted by a build with no
+    GPU backend, where there was nothing to fall back from."""
+
+
 class ModelDownloadError(JevError, OSError):
     """A model file could not be downloaded or found: no network, HTTP error, not enough disk
     space, or offline mode with the file missing from the cache."""
@@ -113,6 +123,7 @@ for _cls in (
     ModelVerificationError,
     NumericalError,
     ModelDownloadError,
+    DeviceFallbackWarning,
 ):
     _cls.__module__ = "archai_jev"
 del _cls

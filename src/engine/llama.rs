@@ -29,7 +29,9 @@ use crate::error::{Error, Result};
 use crate::pool::{PoolStats, Slot, SlotPool};
 
 mod device;
-pub use device::{LlamaProbe, compiled_backends, cpu_plan, model_params, prepare_model};
+pub use device::{
+    LlamaProbe, compiled_backends, cpu_plan, enumerations, model_params, prepare_model,
+};
 
 fn inference(detail: impl Into<String>) -> Error {
     Error::Inference {

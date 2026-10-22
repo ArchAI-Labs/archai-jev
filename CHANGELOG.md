@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Devices from Python.** `archai_jev.available_devices()` lists the devices this process can run a
+  model on (`DeviceInfo`: `name` such as `"cpu"` or `"cuda:0"`, `kind`, `backend`, `description`, memory;
+  frozen, hashable, picklable) and `archai_jev.compiled_backends()` the backends the build contains:
+  `("cpu",)` in every wheel on PyPI. Neither runs on `import` (listing starts the GPU drivers).
+  `Jev.model_info.device` says where the model runs. New exceptions: `DeviceUnavailableError` (a named
+  device the build or the machine lacks) and `DeviceFallbackWarning` (`device="auto"` used the CPU
+  although a GPU backend is compiled in and could not be used; never emitted by a CPU wheel).
 - **A family of general models that answer with the letter of an option** (`spark2_5-letters`, head
   `answer_letters`, template `spark-decisions` v3), for models published as GGUF that read a
   multiple-choice prompt and answer with `A`, `B`, ...: the answer is the logit of those letters at

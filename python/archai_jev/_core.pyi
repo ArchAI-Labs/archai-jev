@@ -16,6 +16,7 @@ __all__ = [
     "_choice_confidence_batch",
     "_dataset_from_items",
     "_dataset_from_jsonl",
+    "_device_enumerations",
     "_fit_temperature",
     "_log_loss_from_logits",
     "_score_confidence",
@@ -26,7 +27,9 @@ __all__ = [
     "_split",
     "_yes_no_probability",
     "_yes_no_probability_batch",
+    "available_devices",
     "calibrated_softmax",
+    "compiled_backends",
     "list_models",
     "load_model",
     "make_question",
@@ -220,6 +223,15 @@ def load_model(
 
 def list_models() -> list[dict[str, Any]]:
     """The models of the registry as plain dictionaries."""
+
+def available_devices() -> list[dict[str, Any]]:
+    """The devices this process can run a model on (lists them, loads nothing)."""
+
+def compiled_backends() -> list[str]:
+    """The backends this build was compiled with: ``cpu`` and each GPU backend of its features."""
+
+def _device_enumerations() -> int:
+    """How many times the devices were listed in this process."""
 
 def make_question(kind: str, instructions: Any, criteria: Any) -> _Question:
     """Build and validate a question (``kind``: "choice", "score" or "yes_no")."""

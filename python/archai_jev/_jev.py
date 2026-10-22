@@ -16,7 +16,12 @@ from . import _core
 from ._answers import Answers, build_answers
 from ._calibration import TemperatureFit
 from ._evaluation import LabelledRecord, _prepare
-from ._exceptions import InvalidQuestionError, JevError, _StoppedError
+from ._exceptions import (
+    DeviceFallbackWarning,
+    InvalidQuestionError,
+    JevError,
+    _StoppedError,
+)
 from ._questions import Choice, Score, YesNo
 from ._reports import (
     CalibrationStudy,
@@ -113,6 +118,9 @@ class ModelInfo:
             refused with :class:`UnsupportedRequestError`. ``None`` if the model has no limit of
             its own.
         max_key_tokens: The most tokens of an option key (only for models that score the keys).
+        device: The device the model runs on, as ``device=`` names it (``"cpu"``, ``"cuda:0"``,
+            ``"vulkan:1"``); after a fall-back of ``device="auto"`` it is ``"cpu"``. ``None`` for
+            the test scorer and for :func:`list_models`.
     """
 
     name: str
@@ -133,6 +141,7 @@ class ModelInfo:
     variants: tuple[VariantInfo, ...] | None = None
     max_options: int | None = None
     max_key_tokens: int | None = None
+    device: str | None = None
 
 
 def _info(raw: dict[str, Any]) -> ModelInfo:
@@ -237,10 +246,14 @@ class Jev:
             name_or_path: ``None`` for the default model, a registry name, or a folder with an
                 ``archai-jev-manifest.json`` (pass a :class:`pathlib.Path` to force a folder).
             revision: A pinned revision of a registry model (full hash or at least 8 characters).
-            device: ``"cpu"`` (the default, never a GPU). ``"auto"``, ``"cuda"``,
-                ``"vulkan"`` and ``"metal"`` (with an optional ``:N`` index) are part of the
-                grammar, but a build without that backend (every wheel on PyPI) raises
-                ``DeviceUnavailableError`` for a named one and runs ``"auto"`` on the CPU.
+            device: Where the model runs. ``"cpu"`` (the default) never uses a GPU. ``"auto"`` uses
+                the best GPU that has a verified tolerance for the model and the CPU otherwise,
+                with a :class:`DeviceFallbackWarning` only when a GPU backend is compiled in and
+                could not be used. ``"cuda"``, ``"vulkan"`` or ``"metal"``, with an optional index
+                (``"cuda:1"``, the index counts the devices of that backend), insist on that
+                device. Anything else (``"gpu"``, ``"CPU"``, ``"mps"``) is a ``ValueError`` that
+                lists the valid names. The wheels on PyPI are CPU-only; see
+                :func:`available_devices` and :func:`compiled_backends`.
             dtype: Weights variant (``"q8_0"``, ``"bf16"``, ``"f32"``); default: the model's.
             temperature: Your own calibration: the temperature that divides the model's raw logits
                 (greater than 0). Every answer then says ``calibrated=True``.
@@ -261,7 +274,14 @@ class Jev:
                 calibration, unsupported family...
             ModelVerificationError: The self-check gave different numbers than expected.
             ModelDownloadError: A file could not be downloaded or found.
-            InferenceError: The engine cannot run (for example a CPU without AVX2).
+            InferenceError: The engine cannot run (for example a CPU without AVX2, or not enough
+                memory on a GPU named in ``device``).
+            DeviceUnavailableError: ``device`` names a backend this build lacks or a device the
+                machine does not have.
+
+        Warns:
+            DeviceFallbackWarning: ``device="auto"`` used the CPU because a compiled-in GPU
+                could not be used; ``model_info.device`` is then ``"cpu"``.
         """
         for label, value in (
             ("revision", revision),
@@ -328,6 +348,9 @@ class Jev:
             path_or_none("manifest", manifest),
             prefix_cache_mib,
         )
+        fallback = raw.pop("fallback", None)
+        if fallback is not None:
+            warnings.warn(str(fallback), DeviceFallbackWarning, stacklevel=2)
         return cls._create(model, _info(raw))
 
     @classmethod

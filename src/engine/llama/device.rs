@@ -8,6 +8,7 @@
 //! from an [`OffloadPlan`] (a test reads the source to keep it that way).
 
 use std::sync::Once;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::{
@@ -123,6 +124,15 @@ pub fn compiled_from(cuda: bool, vulkan: bool, metal: bool) -> Vec<BackendKind> 
     backends
 }
 
+/// How many times the devices were listed in this process. `import archai_jev` must not list them
+/// (spec 011, AC-2: listing starts the GPU drivers), and a test reads this to prove it.
+static ENUMERATIONS: AtomicUsize = AtomicUsize::new(0);
+
+/// The number of times the devices were listed so far.
+pub fn enumerations() -> usize {
+    ENUMERATIONS.load(Ordering::Relaxed)
+}
+
 /// llama.cpp as a [`DeviceProbe`]: the devices ggml registered, in its own order.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LlamaProbe;
@@ -134,6 +144,7 @@ impl DeviceProbe for LlamaProbe {
 
     fn devices(&self) -> Vec<DeviceInfo> {
         quiet_logs();
+        ENUMERATIONS.fetch_add(1, Ordering::Relaxed);
         let mut counts = [0usize; 4];
         let mut out = Vec::new();
         for d in list_llama_ggml_backend_devices() {

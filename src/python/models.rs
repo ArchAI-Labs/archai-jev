@@ -14,7 +14,10 @@ use pyo3::types::PyDict;
 use super::classes::PyModel;
 use crate::convert::Qwen35Converter;
 use crate::convert::headpt::HeadPtReader;
-use crate::engine::llama::LlamaProbe;
+use crate::engine::device::{BackendKind, DeviceProbe};
+use crate::engine::llama::{
+    LlamaProbe, compiled_backends as llama_compiled_backends, enumerations,
+};
 use crate::error::Error;
 use crate::hub::cache::{self, CacheEnv, Os};
 use crate::hub::config::HubConfig;
@@ -149,7 +152,43 @@ fn info_dict<'py>(py: Python<'py>, d: &ModelData) -> PyResult<Bound<'py, PyDict>
     out.set_item("variants", variants_dicts(py, &d.variants)?)?;
     out.set_item("max_options", d.max_options)?;
     out.set_item("max_key_tokens", d.max_key_tokens)?;
+    out.set_item("device", &d.device)?;
+    out.set_item("fallback", d.fallback.as_deref())?;
     Ok(out)
+}
+
+/// The devices this process can run a model on, as plain dictionaries. Lists them; loads nothing.
+#[pyfunction]
+pub fn available_devices(py: Python<'_>) -> PyResult<Vec<Bound<'_, PyDict>>> {
+    let devices = py.detach(|| LlamaProbe.devices());
+    devices
+        .iter()
+        .map(|d| {
+            let out = PyDict::new(py);
+            out.set_item("name", d.name())?;
+            out.set_item("kind", d.kind.name())?;
+            out.set_item("backend", d.backend.name())?;
+            out.set_item("description", &d.description)?;
+            out.set_item("memory_total_mib", d.memory_total_mib)?;
+            out.set_item("memory_free_mib", d.memory_free_mib)?;
+            Ok(out)
+        })
+        .collect()
+}
+
+/// The backends this build was compiled with: `cpu`, and each GPU backend of its features.
+#[pyfunction]
+pub fn compiled_backends() -> Vec<&'static str> {
+    llama_compiled_backends()
+        .into_iter()
+        .map(BackendKind::name)
+        .collect()
+}
+
+/// How many times the devices were listed in this process (a test reads it: `import` lists none).
+#[pyfunction]
+pub fn _device_enumerations() -> usize {
+    enumerations()
 }
 
 /// Memory of the prefix cache when nobody says otherwise, in MiB.

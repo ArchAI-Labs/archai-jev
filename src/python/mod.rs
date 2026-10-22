@@ -29,5 +29,7 @@ pub mod _core {
         PyDataset, check_evaluate_options, dataset_from_items, dataset_from_jsonl, split,
     };
     #[pymodule_export]
-    use super::models::{list_models, load_model};
+    use super::models::{
+        _device_enumerations, available_devices, compiled_backends, list_models, load_model,
+    };
 }

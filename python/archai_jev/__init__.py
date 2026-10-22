@@ -8,8 +8,11 @@ from typing import Any
 from ._answers import Answer, Answers, ChoiceAnswer, ScoreAnswer, YesNoAnswer
 from ._calibration import TemperatureFit, fit_temperature
 from ._core import calibrated_softmax, render_state
+from ._devices import DeviceInfo, available_devices, compiled_backends
 from ._exceptions import (
     CalibrationError,
+    DeviceFallbackWarning,
+    DeviceUnavailableError,
     IncompatibleModelError,
     InferenceError,
     InvalidDatasetError,
@@ -35,6 +38,9 @@ __all__ = [
     "CalibrationError",
     "Choice",
     "ChoiceAnswer",
+    "DeviceFallbackWarning",
+    "DeviceInfo",
+    "DeviceUnavailableError",
     "IncompatibleModelError",
     "InferenceError",
     "InvalidDatasetError",
@@ -57,7 +63,9 @@ __all__ = [
     "VariantInfo",
     "YesNo",
     "YesNoAnswer",
+    "available_devices",
     "calibrated_softmax",
+    "compiled_backends",
     "fit_temperature",
     "list_models",
     "render_state",
