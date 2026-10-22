@@ -155,6 +155,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1.1 to 1.2 times, which is why Python keeps one request at a time.
 
 ### Changed
+- **`device=` follows a grammar and a name the build lacks is a clear error.** `Jev.from_pretrained(device=...)`
+  now accepts `"cpu"` (the default), `"auto"`, `"cuda"`, `"vulkan"` and `"metal"`, the last three with
+  an optional index (`"cuda:1"`); anything else (`"gpu"`, `"CPU"`, `"mps"`, `""`) is a `ValueError`
+  that lists the valid names. The wheels on PyPI have no GPU backend: a named GPU raises
+  `DeviceUnavailableError` (a `RuntimeError`) before anything is downloaded, and `"auto"` runs on
+  the CPU. Where `device="cuda"` was a `ValueError` it is now that error. Behind it the loader
+  already chooses the device, checks the self-check tolerance and keeps the verification record
+  **per device**, and `"auto"` falls back to the CPU only when the engine cannot use a GPU, never
+  after wrong numbers (that is `ModelVerificationError`); nothing changes for `device="cpu"` except
+  that every verification record is written again once. An engine failure during the self-check
+  (for example out of memory) is now an `InferenceError` instead of a `ModelVerificationError`.
 - **The self-check no longer depends on `prefix_cache_mib`**: the vectors of a model always run in
   the segments of the template's cuts, the same computation a default `Jev` uses, even when the cache
   is off. The two ways of computing a row (in one piece, or in segments) differ by a few hundredths

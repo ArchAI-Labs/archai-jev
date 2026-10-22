@@ -1,10 +1,11 @@
 //! A fake engine: deterministic numbers that depend on the request, with knobs to break them.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::calibration::calibrated_softmax;
-use crate::error::Result;
+use crate::engine::device::BackendKind;
+use crate::error::{Error, Result};
 use crate::json_strict::Json;
 use crate::mock::MockScorer;
 use crate::models::backend::{Backend, Engine, ValidatedCheckpoint};
@@ -96,6 +97,10 @@ pub struct Counters {
     pub loads: AtomicUsize,
     pub runs: AtomicUsize,
     pub scores: AtomicUsize,
+    /// The identity of the device of every load, in order.
+    pub devices: Mutex<Vec<String>>,
+    /// While true, `score` fails like an engine that ran out of memory during a request.
+    pub fail_scores: AtomicBool,
 }
 
 /// A loaded fake model: scorer and vector runner in one.
@@ -103,6 +108,8 @@ pub struct FakeModel {
     calibration: Calibration,
     n_vocab: u64,
     perturb: Perturb,
+    /// The engine fails when asked to run a self-check vector (a context that does not fit).
+    fail_run: bool,
     counters: Arc<Counters>,
     mock: MockScorer,
 }
@@ -113,6 +120,11 @@ impl Scorer for FakeModel {
     }
     fn score(&self, state: &State, questions: &Questions) -> Result<Vec<Vec<f64>>> {
         self.counters.scores.fetch_add(1, Ordering::SeqCst);
+        if self.counters.fail_scores.load(Ordering::SeqCst) {
+            return Err(Error::Inference {
+                detail: "the fake engine ran out of memory during a request".to_string(),
+            });
+        }
         self.mock.score(state, questions)
     }
 }
@@ -120,6 +132,11 @@ impl Scorer for FakeModel {
 impl VectorRunner for FakeModel {
     fn run(&self, request: &Json) -> Result<RunOutput> {
         self.counters.runs.fetch_add(1, Ordering::SeqCst);
+        if self.fail_run {
+            return Err(Error::Inference {
+                detail: "the fake engine ran out of memory creating the context".to_string(),
+            });
+        }
         let mut ids = fake_ids(request, self.n_vocab);
         let mut questions = fake_logits(request);
         match self.perturb {
@@ -164,6 +181,12 @@ pub struct FakeBackend {
     pub counters: Arc<Counters>,
     pub perturb: Perturb,
     pub fail_load: bool,
+    /// Numbers that differ on one backend only: a GPU that computes differently.
+    pub perturb_on: Vec<(BackendKind, Perturb)>,
+    /// Backends whose load fails like an engine that cannot use the device.
+    pub fail_load_on: Vec<BackendKind>,
+    /// Backends whose self-check run fails like an engine out of memory.
+    pub fail_run_on: Vec<BackendKind>,
 }
 
 impl FakeBackend {
@@ -172,7 +195,38 @@ impl FakeBackend {
             counters: Arc::new(Counters::default()),
             perturb: Perturb::None,
             fail_load: false,
+            perturb_on: Vec::new(),
+            fail_load_on: Vec::new(),
+            fail_run_on: Vec::new(),
         }
+    }
+
+    /// The numbers on `backend` are perturbed, those on every other backend are not.
+    pub fn perturbed_on(mut self, backend: BackendKind, p: Perturb) -> Self {
+        self.perturb_on.push((backend, p));
+        self
+    }
+
+    /// Loading on `backend` fails with an engine error.
+    pub fn failing_load_on(mut self, backend: BackendKind) -> Self {
+        self.fail_load_on.push(backend);
+        self
+    }
+
+    /// Running a vector on `backend` fails with an engine error.
+    pub fn failing_run_on(mut self, backend: BackendKind) -> Self {
+        self.fail_run_on.push(backend);
+        self
+    }
+
+    /// Make every `score` fail (or stop failing): an error during a request.
+    pub fn fail_scores(&self, on: bool) {
+        self.counters.fail_scores.store(on, Ordering::SeqCst);
+    }
+
+    /// The identity of the device of every load so far.
+    pub fn devices_loaded(&self) -> Vec<String> {
+        self.counters.devices.lock().unwrap().clone()
     }
 
     pub fn perturbed(mut self, p: Perturb) -> Self {
@@ -198,6 +252,17 @@ impl Default for FakeBackend {
 impl Backend for FakeBackend {
     fn load(&self, checkpoint: &ValidatedCheckpoint) -> Result<Engine> {
         self.counters.loads.fetch_add(1, Ordering::SeqCst);
+        let backend = checkpoint.device.backend;
+        self.counters
+            .devices
+            .lock()
+            .unwrap()
+            .push(checkpoint.device.identity());
+        if self.fail_load_on.contains(&backend) {
+            return Err(Error::Inference {
+                detail: format!("the fake engine cannot use the {backend} device"),
+            });
+        }
         if self.fail_load {
             return Err(crate::error::Error::IncompatibleModel(
                 crate::models::incompat::Incompat::ConversionFailed {
@@ -215,7 +280,12 @@ impl Backend for FakeBackend {
         let model = Arc::new(FakeModel {
             calibration: checkpoint.calibration.calibration,
             n_vocab,
-            perturb: self.perturb,
+            perturb: self
+                .perturb_on
+                .iter()
+                .find(|(b, _)| *b == backend)
+                .map_or(self.perturb, |(_, p)| *p),
+            fail_run: self.fail_run_on.contains(&backend),
             counters: Arc::clone(&self.counters),
             mock: MockScorer::new(1).with_calibration(checkpoint.calibration.calibration),
         });

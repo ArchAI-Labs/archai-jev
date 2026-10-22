@@ -7,6 +7,7 @@
     clippy::indexing_slicing
 )]
 
+mod device_matrix;
 mod harness;
 mod hub_flow;
 mod mini;

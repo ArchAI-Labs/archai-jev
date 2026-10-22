@@ -67,9 +67,18 @@ fn check_vector(
             detail,
         })
     };
-    let out = runner
-        .run(&vector.request)
-        .map_err(|e| shape(format!("the engine could not answer the vector: {e}")))?;
+    let out = match runner.run(&vector.request) {
+        // The engine could not run at all (out of memory, a driver reset): that says nothing
+        // about its numbers. It stays an engine error so that `device="auto"` can fall back to
+        // the CPU, which a wrong number never may (spec 011, section 2).
+        Err(e @ Error::Inference { .. }) => return Err(e),
+        Err(e) => {
+            return Err(shape(format!(
+                "the engine could not answer the vector: {e}"
+            )));
+        }
+        Ok(out) => out,
+    };
 
     if out.input_ids != vector.input_ids {
         let position = out

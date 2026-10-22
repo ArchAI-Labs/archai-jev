@@ -9,6 +9,7 @@ use std::sync::Arc;
 use super::calibration_gate::Decision;
 use super::manifest::Manifest;
 use super::verify::VectorRunner;
+use crate::engine::device::DeviceInfo;
 use crate::error::Result;
 use crate::scorer::Scorer;
 
@@ -31,6 +32,9 @@ pub struct ValidatedCheckpoint {
     pub head_path: Option<PathBuf>,
     /// The calibration decided from the manifest and the arguments.
     pub calibration: Decision,
+    /// The device chosen to run the model (spec 011): the engine builds its offload plan from it
+    /// and never from its own defaults.
+    pub device: DeviceInfo,
 }
 
 /// What an engine returns after loading a checkpoint.

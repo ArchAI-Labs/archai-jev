@@ -237,7 +237,10 @@ class Jev:
             name_or_path: ``None`` for the default model, a registry name, or a folder with an
                 ``archai-jev-manifest.json`` (pass a :class:`pathlib.Path` to force a folder).
             revision: A pinned revision of a registry model (full hash or at least 8 characters).
-            device: Only ``"cpu"``.
+            device: ``"cpu"`` (the default, never a GPU). ``"auto"``, ``"cuda"``,
+                ``"vulkan"`` and ``"metal"`` (with an optional ``:N`` index) are part of the
+                grammar, but a build without that backend (every wheel on PyPI) raises
+                ``DeviceUnavailableError`` for a named one and runs ``"auto"`` on the CPU.
             dtype: Weights variant (``"q8_0"``, ``"bf16"``, ``"f32"``); default: the model's.
             temperature: Your own calibration: the temperature that divides the model's raw logits
                 (greater than 0). Every answer then says ``calibrated=True``.

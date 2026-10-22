@@ -81,6 +81,13 @@ pub enum Incompat {
         dtype: String,
         reference: &'static str,
     },
+    /// The device asked for is there, but this model has no verified tolerance on its backend.
+    NoDeviceRow {
+        family: String,
+        dtype: String,
+        backend: String,
+        verified: Vec<String>,
+    },
     SourceWithoutConverter {
         kind: String,
     },
@@ -340,6 +347,16 @@ impl fmt::Display for Incompat {
             } => write!(
                 f,
                 "no verification tolerance is defined for family '{family}' with dtype '{dtype}' and reference '{reference}', so its numbers cannot be verified; the variant is refused (tolerances are in the library, not in manifests)"
+            ),
+            I::NoDeviceRow {
+                family,
+                dtype,
+                backend,
+                verified,
+            } => write!(
+                f,
+                "family '{family}' with dtype '{dtype}' has no verified tolerance on the '{backend}' backend, so it is not allowed to answer there; the backends verified for this model are: {}; use one of them, or device='auto'",
+                list(verified)
             ),
             I::SourceWithoutConverter { kind } => write!(
                 f,

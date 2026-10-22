@@ -3,6 +3,7 @@
 use std::fmt;
 
 use crate::calibration::problem::{NoCalibration, RowsProblem};
+use crate::engine::device::Refusal;
 use crate::evaluation::problem::{ArgumentProblem, DatasetProblem};
 use crate::models::failures::{ArgFailure, DownloadFailure, VerifyFailure};
 use crate::models::incompat::Incompat;
@@ -237,6 +238,11 @@ pub enum Error {
     #[error("the inference engine failed: {detail}")]
     Inference { detail: String },
 
+    /// A device asked for by name cannot be used: the build lacks the backend, or the machine has
+    /// no such device (spec 011, section 2).
+    #[error("{0}")]
+    DeviceUnavailable(Refusal),
+
     /// The scorer returned the wrong number of logits.
     #[error("{0}")]
     ScorerOutputShape(ShapeProblem),
@@ -423,6 +429,8 @@ pub enum Category {
     Unsupported,
     /// `InferenceError`.
     Inference,
+    /// `DeviceUnavailableError`.
+    DeviceUnavailable,
     /// `IncompatibleModelError`.
     Incompatible,
     /// `ModelVerificationError`.
@@ -494,6 +502,7 @@ impl Error {
             Error::ModelArgument(ArgFailure::PathNotFound { .. }) => Category::PathNotFound,
             Error::ModelArgument(_) => Category::Argument,
             Error::Inference { .. } => Category::Inference,
+            Error::DeviceUnavailable(_) => Category::DeviceUnavailable,
             Error::NonFiniteLogit { .. }
             | Error::NonFiniteHidden { .. }
             | Error::ScorerOutputShape(_)

@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use _core::convert::Qwen35Converter;
 use _core::convert::headpt::HeadPtReader;
 use _core::convert::qwen35::convert_files;
+use _core::engine::device::CpuOnlyProbe;
 use _core::hub::config::HubConfig;
 use _core::hub::download::{Response, Transport};
 use _core::hub::events::{NeverCancel, NoObserver, Recorder};
@@ -150,6 +151,7 @@ fn bench_loads() {
             registry: Registry::builtin().unwrap(),
             hub: &hub,
             backend: &backend,
+            devices: &CpuOnlyProbe,
             transport: &NoNetwork,
             observer: recorder,
             cancel: &NeverCancel,

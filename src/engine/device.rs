@@ -218,14 +218,45 @@ impl DeviceInfo {
             other => format!("{other}:{}", self.index),
         }
     }
+
+    /// What a verification record is keyed by: the name **and** the description of a GPU (another
+    /// GPU in the same slot runs other kernels), just `cpu` for the processor.
+    pub fn identity(&self) -> String {
+        match self.backend {
+            BackendKind::Cpu => "cpu".to_string(),
+            _ => format!("{}/{}", self.name(), self.description),
+        }
+    }
 }
 
 /// What the build contains and what the machine has. The loader asks it; the tests replace it.
-pub trait DeviceProbe {
+pub trait DeviceProbe: Send + Sync {
     /// The backends this build was compiled with (always includes `Cpu`).
     fn compiled_backends(&self) -> Vec<BackendKind>;
     /// Every device the engine sees, the processor included. Listing never loads a model.
     fn devices(&self) -> Vec<DeviceInfo>;
+}
+
+/// The probe of a build that has no GPU backend: the wheels on PyPI. It lists the processor only.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CpuOnlyProbe;
+
+impl DeviceProbe for CpuOnlyProbe {
+    fn compiled_backends(&self) -> Vec<BackendKind> {
+        vec![BackendKind::Cpu]
+    }
+
+    fn devices(&self) -> Vec<DeviceInfo> {
+        vec![DeviceInfo {
+            backend: BackendKind::Cpu,
+            index: 0,
+            engine_index: 0,
+            kind: DeviceKind::Cpu,
+            description: "CPU".to_string(),
+            memory_total_mib: None,
+            memory_free_mib: None,
+        }]
+    }
 }
 
 /// The answer of [`select`]: the device that will run the model.

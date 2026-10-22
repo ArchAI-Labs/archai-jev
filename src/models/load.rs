@@ -7,6 +7,7 @@ use std::sync::Arc;
 use super::backend::{Backend, ValidatedCheckpoint};
 use super::calibration_gate::{self, CalibrationSource};
 use super::convert::{ConvertJob, Converter, SourceFiles};
+use super::failures::ArgFailure;
 use super::files::FileEntry;
 use super::gguf;
 use super::hash::{sha256_file, sha256_hex};
@@ -22,7 +23,9 @@ use super::tolerance;
 use super::validate;
 use super::variants::{VariantData, variants_of};
 use super::verify::run_selfcheck;
-use crate::engine::device::BackendKind;
+use crate::engine::device::{
+    BackendKind, DeviceInfo, DeviceProbe, DeviceRequest, Refusal, Selected, select,
+};
 use crate::error::{Error, Result};
 use crate::hub::blobs::BlobStore;
 use crate::hub::cache::Layout;
@@ -50,6 +53,8 @@ pub struct Context<'a> {
     pub hub: &'a HubConfig,
     /// The inference engine.
     pub backend: &'a dyn Backend,
+    /// The backends the build contains and the devices the machine has (spec 011).
+    pub devices: &'a dyn DeviceProbe,
     /// The network.
     pub transport: &'a dyn Transport,
     /// Receives progress and notices.
@@ -99,6 +104,11 @@ pub struct ModelData {
     pub source: &'static str,
     /// Every variant the manifest offers (not only the one loaded).
     pub variants: Vec<VariantData>,
+    /// The device the model runs on, as `device=` names it: `cpu`, `cuda:0`, `vulkan:1`.
+    pub device: String,
+    /// Why the CPU is in use although `device="auto"` wanted a GPU, when it is not simply that
+    /// the build has no GPU backend. `None` for anything else.
+    pub fallback: Option<String>,
 }
 
 /// A model ready to answer.
@@ -257,13 +267,47 @@ fn verify_integrity(files: &[Located<'_>]) -> Result<()> {
     Ok(())
 }
 
-/// Load a model: resolve, read and check the manifest, fetch and verify the files, check the
-/// structure, load the weights, self-check (first time only) and return the model.
+/// Load a model: resolve, read and check the manifest, choose the device, fetch and verify the
+/// files, check the structure, load the weights, self-check (first time only) and return the
+/// model.
+///
+/// With `device="auto"` a GPU that cannot be *used* (the engine fails on it: not enough memory,
+/// a driver error) is replaced by the CPU and the reason is reported in
+/// [`ModelData::fallback`]. A GPU whose numbers are *wrong* (the self-check fails) is never
+/// replaced: that is [`Error::ModelVerification`] (spec 011, section 2).
 ///
 /// # Errors
 /// See spec 005: [`Error::ModelArgument`], [`Error::IncompatibleModel`],
-/// [`Error::ModelDownload`], [`Error::ModelVerification`], [`Error::Cancelled`].
+/// [`Error::ModelDownload`], [`Error::ModelVerification`], [`Error::Cancelled`]; and
+/// [`Error::DeviceUnavailable`] for a named device that cannot be used.
 pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
+    let mut chosen: Option<DeviceInfo> = None;
+    match load_on(req, ctx, None, &mut chosen) {
+        Err(error @ Error::Inference { .. })
+            if DeviceRequest::parse(&req.selection.device) == Ok(DeviceRequest::Auto) =>
+        {
+            let Some(gpu) = chosen.filter(|d| d.backend != BackendKind::Cpu) else {
+                return Err(error);
+            };
+            let reason = format!(
+                "using the CPU instead of {} ({}): {error}",
+                gpu.name(),
+                gpu.description
+            );
+            load_on(req, ctx, Some(reason), &mut None)
+        }
+        other => other,
+    }
+}
+
+/// One attempt at loading. `cpu_instead` is the reason of a second attempt on the CPU after
+/// `device="auto"` could not use its GPU; `chosen` receives the device the attempt selected.
+fn load_on(
+    req: &LoadRequest,
+    ctx: &Context<'_>,
+    cpu_instead: Option<String>,
+    chosen: &mut Option<DeviceInfo>,
+) -> Result<LoadedModel> {
     // Stage 0: arguments and which model.
     let (target, dtype_arg) = resolve(&req.selection, ctx.registry)?;
 
@@ -302,11 +346,49 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
         req.allow_uncalibrated,
     )?;
 
+    // Stage 2b: the device. Still no file and no network: a device that cannot be used is refused
+    // before anything is downloaded or hashed.
+    let request = if cpu_instead.is_some() {
+        DeviceRequest::Cpu
+    } else {
+        DeviceRequest::parse(&req.selection.device).map_err(|_| {
+            Error::ModelArgument(ArgFailure::Device {
+                got: req.selection.device.clone(),
+            })
+        })?
+    };
+    let has_row = |backend: BackendKind| {
+        tolerance::lookup(resolved.family.key, &dtype, variant.reference, backend).is_some()
+    };
+    let mut selected: Selected =
+        select(request, ctx.devices, &has_row).map_err(|refusal| match refusal {
+            Refusal::NoRow { backend } => incompat(Incompat::NoDeviceRow {
+                family: resolved.family.key.to_string(),
+                dtype: dtype.clone(),
+                backend: backend.name().to_string(),
+                verified: [
+                    BackendKind::Cpu,
+                    BackendKind::Cuda,
+                    BackendKind::Vulkan,
+                    BackendKind::Metal,
+                ]
+                .into_iter()
+                .filter(|b| has_row(*b))
+                .map(|b| b.name().to_string())
+                .collect(),
+            }),
+            other => Error::DeviceUnavailable(other),
+        })?;
+    if cpu_instead.is_some() {
+        selected.fallback = cpu_instead;
+    }
+    *chosen = Some(selected.device.clone());
+
     // Stage 3: the files, present and (unless a record vouches for them) verified.
     let layout = Layout::new(&ctx.hub.cache_root);
     let located = locate(ctx, &target, files_of(&manifest, variant))?;
     let manifest_sha = sha256_hex(manifest.canonical_text().as_bytes());
-    let key = record::key(&manifest_sha, &dtype, "cpu");
+    let key = record::key(&manifest_sha, &dtype, &selected.device.identity());
     let current: Vec<(String, PathBuf, String)> = located
         .iter()
         .map(|f| (f.entry.path.clone(), f.path.clone(), f.entry.sha256.clone()))
@@ -461,6 +543,7 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
         tokenizer_path,
         head_path,
         calibration: decision,
+        device: selected.device.clone(),
     };
     let engine = ctx.backend.load(&checkpoint)?;
 
@@ -470,7 +553,7 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
             resolved.family.key,
             &dtype,
             variant.reference,
-            BackendKind::Cpu,
+            selected.device.backend,
         )
         .ok_or_else(|| {
             incompat(Incompat::NoTolerance {
@@ -563,6 +646,8 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
             Target::Registry(_) => "registry",
             Target::Local { .. } => "local",
         },
+        device: selected.name(),
+        fallback: selected.fallback,
     };
     Ok(LoadedModel {
         data,

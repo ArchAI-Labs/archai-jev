@@ -218,7 +218,8 @@ impl fmt::Display for ArgFailure {
             }
             ArgFailure::Device { got } => write!(
                 f,
-                "device '{got}' is not supported; supported: 'cpu' (GPU support is planned)"
+                "{}",
+                crate::engine::device::DeviceParseError { given: got.clone() }
             ),
             ArgFailure::Dtype { got } => {
                 write!(

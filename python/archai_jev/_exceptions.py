@@ -8,6 +8,7 @@ from __future__ import annotations
 
 __all__ = [
     "CalibrationError",
+    "DeviceUnavailableError",
     "IncompatibleModelError",
     "InferenceError",
     "InvalidDatasetError",
@@ -87,6 +88,13 @@ class InferenceError(JevError, RuntimeError):
     returned and the model stays usable for the next request."""
 
 
+class DeviceUnavailableError(JevError, RuntimeError):
+    """A device named in ``device=`` cannot be used: this build of archai_jev was compiled without
+    that backend (the wheels on PyPI are CPU-only), or the machine has no such device (a missing
+    driver, a virtual machine, a wrong index). ``device="cpu"`` and ``device="auto"`` never raise
+    it. The message lists what the build contains."""
+
+
 class ModelDownloadError(JevError, OSError):
     """A model file could not be downloaded or found: no network, HTTP error, not enough disk
     space, or offline mode with the file missing from the cache."""
@@ -101,6 +109,7 @@ for _cls in (
     UnsupportedRequestError,
     IncompatibleModelError,
     InferenceError,
+    DeviceUnavailableError,
     ModelVerificationError,
     NumericalError,
     ModelDownloadError,

@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use _core::Error;
 use _core::calibration::calibrated_softmax;
 use _core::engine::device::BackendKind;
+use _core::engine::device::CpuOnlyProbe;
 use _core::hub::config::HubConfig;
 use _core::hub::download::{Response, Transport};
 use _core::hub::events::{NeverCancel, Recorder};
@@ -54,6 +55,7 @@ fn load(dir: &Path, cache_mib: u64) -> Result<LoadedModel, Error> {
         registry: Registry::builtin().unwrap(),
         hub: &hub,
         backend: &backend,
+        devices: &CpuOnlyProbe,
         transport: &NoNetwork,
         observer: &Recorder::default(),
         cancel: &NeverCancel,

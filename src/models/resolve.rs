@@ -7,6 +7,7 @@ use super::incompat::Incompat;
 use super::manifest::Manifest;
 use super::recipes;
 use super::registry::Registry;
+use crate::engine::device::DeviceRequest;
 use crate::error::{Error, Result};
 
 /// File name of the manifest in a local model folder.
@@ -77,7 +78,7 @@ pub fn resolve<'r>(
     sel: &Selection,
     registry: &'r Registry,
 ) -> Result<(Target<'r>, Option<&'static str>)> {
-    if sel.device != "cpu" {
+    if DeviceRequest::parse(&sel.device).is_err() {
         return Err(arg(ArgFailure::Device {
             got: sel.device.clone(),
         }));

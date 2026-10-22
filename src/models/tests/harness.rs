@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use crate::engine::device::{CpuOnlyProbe, DeviceProbe};
 use crate::error::Result;
 use crate::hub::config::HubConfig;
 use crate::hub::download::{Response, Transport};
@@ -38,6 +39,8 @@ pub struct Harness {
     pub converter: Option<Arc<dyn crate::models::convert::Converter>>,
     pub head_reader: Option<Arc<dyn crate::models::head::HeadReader>>,
     pub cancel: Option<Arc<dyn crate::hub::events::Cancel>>,
+    /// What the build contains and the machine has; the CPU alone unless a test says otherwise.
+    pub devices: Box<dyn DeviceProbe>,
 }
 
 pub const EMPTY_INDEX: &str = r#"{"default": null, "current": {}}"#;
@@ -60,6 +63,7 @@ impl Harness {
             converter: None,
             head_reader: None,
             cancel: None,
+            devices: Box::new(CpuOnlyProbe),
         }
     }
 
@@ -74,11 +78,15 @@ impl Harness {
     }
 
     pub fn local(&self, dir: &Path) -> LoadRequest {
+        self.local_on(dir, "cpu")
+    }
+
+    pub fn local_on(&self, dir: &Path, device: &str) -> LoadRequest {
         LoadRequest {
             selection: Selection {
                 name_or_path: NameOrPath::Path(dir.to_path_buf()),
                 revision: None,
-                device: "cpu".to_string(),
+                device: device.to_string(),
                 dtype: None,
                 manifest: None,
             },
@@ -93,6 +101,7 @@ impl Harness {
             registry: &self.registry,
             hub: &hub,
             backend: &self.backend,
+            devices: self.devices.as_ref(),
             transport: self
                 .real_transport
                 .as_deref()

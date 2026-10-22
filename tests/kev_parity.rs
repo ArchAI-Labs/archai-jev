@@ -23,6 +23,7 @@ use _core::Answer;
 use _core::calibration::calibrated_softmax;
 use _core::convert::Qwen35Converter;
 use _core::convert::headpt::HeadPtReader;
+use _core::engine::device::CpuOnlyProbe;
 use _core::hub::config::HubConfig;
 use _core::hub::download::{Response, Transport};
 use _core::hub::events::{NeverCancel, Recorder};
@@ -110,6 +111,7 @@ fn run(dtype: &str, cache_mib: u64) {
         registry,
         hub: &hub,
         backend: &backend,
+        devices: &CpuOnlyProbe,
         transport: &NoNetwork,
         observer: &recorder,
         cancel: &NeverCancel,
@@ -304,6 +306,7 @@ fn each_converter_mutant_is_stopped_by_the_selfcheck() {
         registry,
         hub: &hub,
         backend: &backend,
+        devices: &CpuOnlyProbe,
         transport: &NoNetwork,
         observer: &Recorder::default(),
         cancel: &NeverCancel,

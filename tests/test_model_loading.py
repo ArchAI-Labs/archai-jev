@@ -198,10 +198,20 @@ def test_first_argument_must_be_text_or_a_path() -> None:
         Jev.from_pretrained(3)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("device", ["cuda", "mps", "CPU", ""])
-def test_only_cpu_is_supported(device: str) -> None:
-    with pytest.raises(ValueError, match="cpu"):
+@pytest.mark.parametrize("device", ["gpu", "mps", "CPU", "", "cuda:01", "cpu:0"])
+def test_a_device_outside_the_grammar_is_a_value_error(device: str) -> None:
+    with pytest.raises(ValueError, match="valid: 'cpu'"):
         Jev.from_pretrained(device=device)
+
+
+@pytest.mark.parametrize("device", ["cuda", "cuda:1", "vulkan", "metal"])
+def test_a_gpu_backend_the_wheel_lacks_is_unavailable(device: str) -> None:
+    from archai_jev._exceptions import DeviceUnavailableError
+
+    with pytest.raises(DeviceUnavailableError, match="compiled without the") as caught:
+        Jev.from_pretrained(device=device, offline=True)
+    assert "compiled: cpu" in str(caught.value)
+    assert isinstance(caught.value, RuntimeError)
 
 
 @pytest.mark.parametrize("dtype", ["int8", "q4", "fp16", "Q8_0", ""])

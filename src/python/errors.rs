@@ -50,6 +50,7 @@ impl From<Error> for PyErr {
             Category::Dataset => raise("InvalidDatasetError", message),
             Category::Unsupported => raise("UnsupportedRequestError", message),
             Category::Inference => raise("InferenceError", message),
+            Category::DeviceUnavailable => raise("DeviceUnavailableError", message),
             Category::Incompatible => raise("IncompatibleModelError", message),
             Category::Verification => raise("ModelVerificationError", message),
             Category::Download => raise("ModelDownloadError", message),

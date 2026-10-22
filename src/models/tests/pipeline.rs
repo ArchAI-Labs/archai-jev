@@ -407,10 +407,16 @@ fn what_the_manifest_alone_decides_happens_before_any_network_or_disk() {
     );
     // arguments
     req.selection.dtype = None;
-    req.selection.device = "cuda".to_string();
+    req.selection.device = "gpu".to_string();
     assert!(matches!(
         h.load(&req).err().unwrap(),
         Error::ModelArgument(_)
+    ));
+    // a device the build cannot offer is refused as early (spec 011, section 2)
+    req.selection.device = "cuda".to_string();
+    assert!(matches!(
+        h.load(&req).err().unwrap(),
+        Error::DeviceUnavailable(_)
     ));
     assert_eq!(h.transport.gets.load(Ordering::SeqCst), 0);
     assert!(
