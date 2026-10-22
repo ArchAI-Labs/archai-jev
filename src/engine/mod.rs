@@ -11,6 +11,7 @@
 //! changed. One [`Session`] is one request.
 
 pub mod cpu;
+pub mod device;
 #[cfg(any(test, feature = "testing"))]
 pub mod fake;
 pub mod llama;
