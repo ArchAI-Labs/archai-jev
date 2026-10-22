@@ -90,6 +90,43 @@ fn what_a_ggml_device_is() {
 }
 
 #[test]
+fn compiled_backends_follow_the_features() {
+    use BackendKind::{Cpu, Cuda, Metal, Vulkan};
+    for (cuda, vulkan, metal, want) in [
+        (false, false, false, vec![Cpu]),
+        (true, false, false, vec![Cpu, Cuda]),
+        (false, true, false, vec![Cpu, Vulkan]),
+        (false, false, true, vec![Cpu, Metal]),
+        (true, true, true, vec![Cpu, Cuda, Vulkan, Metal]),
+    ] {
+        assert_eq!(
+            compiled_from(cuda, vulkan, metal),
+            want,
+            "{cuda} {vulkan} {metal}"
+        );
+    }
+    // and the real list reads the real features of this build
+    assert_eq!(
+        compiled_backends(),
+        compiled_from(
+            cfg!(feature = "cuda"),
+            cfg!(feature = "vulkan"),
+            cfg!(feature = "metal")
+        )
+    );
+    assert_eq!(compiled_backends().contains(&Cuda), cfg!(feature = "cuda"));
+    assert_eq!(
+        compiled_backends().contains(&Vulkan),
+        cfg!(feature = "vulkan")
+    );
+    assert_eq!(
+        compiled_backends().contains(&Metal),
+        cfg!(feature = "metal")
+    );
+    assert_eq!(compiled_backends().first(), Some(&Cpu));
+}
+
+#[test]
 fn the_probe_lists_this_machine() {
     let devices = LlamaProbe.devices();
     let cpus: Vec<_> = devices
@@ -99,8 +136,11 @@ fn the_probe_lists_this_machine() {
     assert_eq!(cpus.len(), 1, "{devices:?}");
     assert_eq!(cpus[0].kind, DeviceKind::Cpu);
     assert_eq!(cpus[0].name(), "cpu");
-    // a CPU wheel has no GPU backend, so nothing else is compiled in or listed
-    assert_eq!(LlamaProbe.compiled_backends(), vec![BackendKind::Cpu]);
+    // what is compiled in follows the features; a CPU wheel lists nothing but the processor
+    assert_eq!(LlamaProbe.compiled_backends(), compiled_backends());
+    if compiled_backends() == [BackendKind::Cpu] {
+        assert_eq!(devices.len(), 1, "{devices:?}");
+    }
     // the indices of each backend count from 0 in the order the engine lists them
     for backend in [BackendKind::Cuda, BackendKind::Vulkan, BackendKind::Metal] {
         let own: Vec<usize> = devices

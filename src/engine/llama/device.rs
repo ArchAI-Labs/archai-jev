@@ -94,10 +94,33 @@ fn mib(bytes: usize) -> Option<u64> {
     (bytes > 0).then(|| u64::try_from(bytes / (1024 * 1024)).unwrap_or(u64::MAX))
 }
 
-/// The backends this build of the engine was compiled with. The wheels on PyPI have none besides
-/// the processor; the GPU features are added with the build recipes (spec 011, task T9).
+/// The backends this build of the engine was compiled with: the processor, and each GPU backend
+/// whose Cargo feature is on. The wheels on PyPI have none besides the processor.
+///
+/// A feature is only a request to CMake; the proof that it produced a backend is the build of the
+/// feature in CI, which asserts this list on the artefact. `build.rs` makes the one case where a
+/// feature is accepted and produces nothing (`metal` without `GGML_METAL=ON`) a build error.
 pub fn compiled_backends() -> Vec<BackendKind> {
-    vec![BackendKind::Cpu]
+    compiled_from(
+        cfg!(feature = "cuda"),
+        cfg!(feature = "vulkan"),
+        cfg!(feature = "metal"),
+    )
+}
+
+/// The list for these features, in the order the devices are listed.
+pub fn compiled_from(cuda: bool, vulkan: bool, metal: bool) -> Vec<BackendKind> {
+    let mut backends = vec![BackendKind::Cpu];
+    if cuda {
+        backends.push(BackendKind::Cuda);
+    }
+    if vulkan {
+        backends.push(BackendKind::Vulkan);
+    }
+    if metal {
+        backends.push(BackendKind::Metal);
+    }
+    backends
 }
 
 /// llama.cpp as a [`DeviceProbe`]: the devices ggml registered, in its own order.

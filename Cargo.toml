@@ -42,6 +42,21 @@ testing = ["dep:tempfile"]
 # permissive recipe and a tolerance that refuses nothing, so that they can be MEASURED. Never in
 # release wheels: a dtype is a real name only after it passes the admission gate of the spec.
 quant-study = []
+# GPU backends of llama.cpp (spec 011). Off in every wheel on PyPI, which are CPU-only; each is a
+# build from source (`maturin build --release --features cuda`, see docs/gpu.md) or a wheel
+# published for that backend. They only forward to the wrapper, so they add no dependency.
+# `cuda`: NVIDIA, needs the CUDA Toolkit (12.8 or later for Blackwell `sm_120`) and, on Windows,
+# `CUDA_PATH_V12_x` and `CMAKE_CUDA_ARCHITECTURES` in the environment.
+cuda = ["llama-cpp-2/cuda"]
+# `cuda-no-vmm`: the same without the import of `nvcuda.dll`, so that `import archai_jev` also
+# works on a machine with no NVIDIA driver (measured in the spike S14).
+cuda-no-vmm = ["llama-cpp-2/cuda-no-vmm"]
+# `vulkan`: NVIDIA, AMD and Intel; needs the Vulkan SDK (`VULKAN_SDK`) and, on Windows,
+# `CMAKE_GENERATOR=Ninja` with the MSVC environment (the Visual Studio generator fails).
+vulkan = ["llama-cpp-2/vulkan"]
+# `metal`: Apple GPUs, macOS only; needs `GGML_METAL=ON` in the environment because
+# `.cargo/config.toml` switches it off, and `build.rs` stops the build if it is not set.
+metal = ["llama-cpp-2/metal"]
 
 [[test]]
 name = "spark_letters_header"

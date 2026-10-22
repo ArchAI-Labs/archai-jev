@@ -10,6 +10,7 @@
 //! question runs on a private copy of it, so no question can see another and the state is never
 //! changed. One [`Session`] is one request.
 
+pub mod build_guard;
 pub mod cpu;
 pub mod device;
 #[cfg(any(test, feature = "testing"))]
