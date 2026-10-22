@@ -8,6 +8,7 @@ use super::manifest::{CalibrationDecl, HeadSpec, Manifest, Source, Variant};
 use super::recipes;
 use super::tolerance;
 use super::vectors::check_vectors;
+use crate::engine::device::BackendKind;
 
 /// The family and architecture parameters a manifest resolved to.
 #[derive(Clone)]
@@ -76,7 +77,7 @@ fn check_variant(
     n_vocab: u64,
     converter_kinds: &[String],
 ) -> Result<(), Incompat> {
-    if tolerance::lookup(family.key, &v.dtype, v.reference).is_none() {
+    if tolerance::lookup(family.key, &v.dtype, v.reference, BackendKind::Cpu).is_none() {
         return Err(Incompat::NoTolerance {
             family: family.key.to_string(),
             dtype: v.dtype.clone(),

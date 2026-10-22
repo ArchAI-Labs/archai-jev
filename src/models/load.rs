@@ -22,6 +22,7 @@ use super::tolerance;
 use super::validate;
 use super::variants::{VariantData, variants_of};
 use super::verify::run_selfcheck;
+use crate::engine::device::BackendKind;
 use crate::error::{Error, Result};
 use crate::hub::blobs::BlobStore;
 use crate::hub::cache::Layout;
@@ -305,7 +306,7 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
     let layout = Layout::new(&ctx.hub.cache_root);
     let located = locate(ctx, &target, files_of(&manifest, variant))?;
     let manifest_sha = sha256_hex(manifest.canonical_text().as_bytes());
-    let key = record::key(&manifest_sha, &dtype);
+    let key = record::key(&manifest_sha, &dtype, "cpu");
     let current: Vec<(String, PathBuf, String)> = located
         .iter()
         .map(|f| (f.entry.path.clone(), f.path.clone(), f.entry.sha256.clone()))
@@ -465,14 +466,19 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
 
     // Stage 8: self-check, once per (files, library, platform).
     if !vouched {
-        let tol =
-            tolerance::lookup(resolved.family.key, &dtype, variant.reference).ok_or_else(|| {
-                incompat(Incompat::NoTolerance {
-                    family: resolved.family.key.to_string(),
-                    dtype: dtype.clone(),
-                    reference: variant.reference.name(),
-                })
-            })?;
+        let tol = tolerance::lookup(
+            resolved.family.key,
+            &dtype,
+            variant.reference,
+            BackendKind::Cpu,
+        )
+        .ok_or_else(|| {
+            incompat(Incompat::NoTolerance {
+                family: resolved.family.key.to_string(),
+                dtype: dtype.clone(),
+                reference: variant.reference.name(),
+            })
+        })?;
         run_selfcheck(
             &manifest.name,
             variant,

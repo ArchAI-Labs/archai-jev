@@ -295,6 +295,7 @@ fn the_plain_path_and_the_segmented_path_agree() {
 #[test]
 #[ignore = "needs the Q8_0 GGUF of the default model: set ARCHAI_JEV_TEST_V2_GGUF"]
 fn the_selfcheck_of_the_default_passes_on_this_platform() {
+    use _core::engine::device::BackendKind;
     use _core::models::tolerance::{Reference, lookup};
     let Some(inp) = inputs() else { return };
     let text = std::fs::read_to_string(registry_manifest()).unwrap();
@@ -321,9 +322,14 @@ fn the_selfcheck_of_the_default_passes_on_this_platform() {
     let Some(Json::Array(vectors)) = variant.get("selfcheck").and_then(|s| s.get("vectors")) else {
         panic!("vectors")
     };
-    let tolerance = lookup("qwen2-keys", "q8_0", Reference::FullPrecision)
-        .unwrap()
-        .p;
+    let tolerance = lookup(
+        "qwen2-keys",
+        "q8_0",
+        Reference::FullPrecision,
+        BackendKind::Cpu,
+    )
+    .unwrap()
+    .p;
     let scorer = scorer(&inp.gguf, &inp.tokenizer, machine_threads());
     let mut worst = 0.0f64;
     for vector in vectors {

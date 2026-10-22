@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use _core::Error;
 use _core::calibration::calibrated_softmax;
+use _core::engine::device::BackendKind;
 use _core::hub::config::HubConfig;
 use _core::hub::download::{Response, Transport};
 use _core::hub::events::{NeverCancel, Recorder};
@@ -382,9 +383,14 @@ fn the_engine_matches_the_reference() {
     let (Some(base), Some(rows)) = (dir(), golden()) else {
         return;
     };
-    let tol = lookup("spark2_5-letters", "q8_0", Reference::FullPrecision)
-        .unwrap()
-        .p;
+    let tol = lookup(
+        "spark2_5-letters",
+        "q8_0",
+        Reference::FullPrecision,
+        BackendKind::Cpu,
+    )
+    .unwrap()
+    .p;
     let loaded = load(&base, 128).unwrap();
     let (mut worst_p, mut worst_logit) = (0.0f64, 0.0f64);
     let (mut questions, mut flips, mut near_ties) = (0usize, 0usize, 0usize);
