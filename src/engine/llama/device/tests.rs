@@ -213,3 +213,28 @@ fn no_model_is_created_from_the_defaults_of_llama_cpp() {
         }
     }
 }
+
+#[test]
+fn the_processor_comes_first_and_the_rest_keeps_the_engine_order() {
+    let device = |backend, index, engine_index| DeviceInfo {
+        backend,
+        index,
+        engine_index,
+        kind: DeviceKind::Gpu,
+        description: String::new(),
+        memory_total_mib: None,
+        memory_free_mib: None,
+    };
+    // the order ggml gave on the development machine: Intel, NVIDIA, then the processor
+    let listed = vec![
+        device(BackendKind::Vulkan, 0, 0),
+        device(BackendKind::Vulkan, 1, 1),
+        device(BackendKind::Cpu, 0, 2),
+    ];
+    let sorted = cpu_first(listed);
+    let names: Vec<String> = sorted.iter().map(DeviceInfo::name).collect();
+    assert_eq!(names, ["cpu", "vulkan:0", "vulkan:1"]);
+    // the number the engine needs is not touched by the sorting
+    assert_eq!(sorted[0].engine_index, 2);
+    assert!(cpu_first(Vec::new()).is_empty());
+}

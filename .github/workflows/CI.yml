@@ -188,6 +188,13 @@ jobs:
             if [ -x ".smoke-$py/bin/python" ]; then PY=".smoke-$py/bin/python"; else PY=".smoke-$py/Scripts/python.exe"; fi
             uv pip install --python "$PY" dist/*.whl
             "$PY" -c "import archai_jev, tempfile; print(archai_jev.calibrated_softmax([1.0, 2.0])); assert any(m.is_default for m in archai_jev.list_models());
+          assert archai_jev.compiled_backends() == ('cpu',), archai_jev.compiled_backends()
+          assert [d.name for d in archai_jev.available_devices()] == ['cpu']
+          try:
+              archai_jev.Jev.from_pretrained(device='cuda', offline=True, cache_dir=tempfile.mkdtemp())
+              raise SystemExit('device=cuda must not work on a CPU wheel')
+          except archai_jev.DeviceUnavailableError as e:
+              assert 'compiled without' in str(e), e
           try:
               archai_jev.Jev.from_pretrained(offline=True, cache_dir=tempfile.mkdtemp())
               raise SystemExit('the default model must not load from an empty cache')
@@ -199,6 +206,12 @@ jobs:
           except ValueError as e:
               assert 'q8_0' in str(e), e"
           done
+      # Spec 011, AC-11: GPU support must not make the CPU wheels bigger. Reference on Windows x64 before the
+      # work: 4,658,770 bytes (+1 % = 4,705,357). Reported here, compared by a person: sizes differ per platform.
+      - name: Wheel size
+        shell: bash
+        run: |
+          for w in dist/*.whl; do echo "$(basename "$w"): $(wc -c < "$w") bytes" | tee -a "$GITHUB_STEP_SUMMARY"; done
       - name: Upload wheels
         uses: actions/upload-artifact@v6
         with:
@@ -241,6 +254,13 @@ jobs:
             if [ -x ".smoke-$py/bin/python" ]; then PY=".smoke-$py/bin/python"; else PY=".smoke-$py/Scripts/python.exe"; fi
             uv pip install --python "$PY" dist/*.whl
             "$PY" -c "import archai_jev, tempfile; print(archai_jev.calibrated_softmax([1.0, 2.0])); assert any(m.is_default for m in archai_jev.list_models());
+          assert archai_jev.compiled_backends() == ('cpu',), archai_jev.compiled_backends()
+          assert [d.name for d in archai_jev.available_devices()] == ['cpu']
+          try:
+              archai_jev.Jev.from_pretrained(device='cuda', offline=True, cache_dir=tempfile.mkdtemp())
+              raise SystemExit('device=cuda must not work on a CPU wheel')
+          except archai_jev.DeviceUnavailableError as e:
+              assert 'compiled without' in str(e), e
           try:
               archai_jev.Jev.from_pretrained(offline=True, cache_dir=tempfile.mkdtemp())
               raise SystemExit('the default model must not load from an empty cache')
@@ -252,6 +272,12 @@ jobs:
           except ValueError as e:
               assert 'q8_0' in str(e), e"
           done
+      # Spec 011, AC-11: GPU support must not make the CPU wheels bigger. Reference on Windows x64 before the
+      # work: 4,658,770 bytes (+1 % = 4,705,357). Reported here, compared by a person: sizes differ per platform.
+      - name: Wheel size
+        shell: bash
+        run: |
+          for w in dist/*.whl; do echo "$(basename "$w"): $(wc -c < "$w") bytes" | tee -a "$GITHUB_STEP_SUMMARY"; done
       - name: Upload wheels
         uses: actions/upload-artifact@v6
         with:
@@ -288,6 +314,13 @@ jobs:
             if [ -x ".smoke-$py/bin/python" ]; then PY=".smoke-$py/bin/python"; else PY=".smoke-$py/Scripts/python.exe"; fi
             uv pip install --python "$PY" dist/*.whl
             "$PY" -c "import archai_jev, tempfile; print(archai_jev.calibrated_softmax([1.0, 2.0])); assert any(m.is_default for m in archai_jev.list_models());
+          assert archai_jev.compiled_backends() == ('cpu',), archai_jev.compiled_backends()
+          assert [d.name for d in archai_jev.available_devices()] == ['cpu']
+          try:
+              archai_jev.Jev.from_pretrained(device='cuda', offline=True, cache_dir=tempfile.mkdtemp())
+              raise SystemExit('device=cuda must not work on a CPU wheel')
+          except archai_jev.DeviceUnavailableError as e:
+              assert 'compiled without' in str(e), e
           try:
               archai_jev.Jev.from_pretrained(offline=True, cache_dir=tempfile.mkdtemp())
               raise SystemExit('the default model must not load from an empty cache')
@@ -299,6 +332,12 @@ jobs:
           except ValueError as e:
               assert 'q8_0' in str(e), e"
           done
+      # Spec 011, AC-11: GPU support must not make the CPU wheels bigger. Reference on Windows x64 before the
+      # work: 4,658,770 bytes (+1 % = 4,705,357). Reported here, compared by a person: sizes differ per platform.
+      - name: Wheel size
+        shell: bash
+        run: |
+          for w in dist/*.whl; do echo "$(basename "$w"): $(wc -c < "$w") bytes" | tee -a "$GITHUB_STEP_SUMMARY"; done
       - name: Upload wheels
         uses: actions/upload-artifact@v6
         with:

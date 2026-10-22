@@ -171,8 +171,15 @@ impl DeviceProbe for LlamaProbe {
                 memory_free_mib: mib(d.memory_free),
             });
         }
-        out
+        cpu_first(out)
     }
+}
+
+/// The processor first, the others in the order the engine lists them. ggml lists the GPUs before
+/// the processor, and `available_devices()` promises the processor first.
+pub fn cpu_first(mut devices: Vec<DeviceInfo>) -> Vec<DeviceInfo> {
+    devices.sort_by_key(|d| d.backend != BackendKind::Cpu); // stable: the rest keeps its order
+    devices
 }
 
 /// The plan that runs a model on the processor of this machine: nothing offloaded, and the
