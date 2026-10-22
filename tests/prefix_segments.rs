@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 
 use _core::Error;
-use _core::engine::llama::{LlamaConfig, LlamaForward};
+use _core::engine::llama::{LlamaConfig, LlamaForward, cpu_plan};
 use _core::engine::{Forward, Output, OutputSpec};
 use _core::models::testing::assets;
 
@@ -37,6 +37,7 @@ fn load(path: &std::path::Path, hidden_states: bool, max_context: u32) -> LlamaF
             threads,
             max_context,
             hidden_states,
+            plan: cpu_plan().unwrap(),
         },
     )
     .unwrap()

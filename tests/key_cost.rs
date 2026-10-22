@@ -33,7 +33,7 @@
 use std::time::{Duration, Instant};
 
 use _core::calibration::calibrated_softmax;
-use _core::engine::llama::{LlamaConfig, LlamaForward};
+use _core::engine::llama::{LlamaConfig, LlamaForward, cpu_plan};
 use _core::engine::{Forward, Output, OutputSpec};
 use _core::heads::KeyLogProbHead;
 use _core::json_strict::{Json, parse};
@@ -135,6 +135,7 @@ fn load(gguf: &std::path::Path, threads: i32, wave: u32) -> LlamaForward {
             threads,
             max_context: MAX_CONTEXT,
             hidden_states: false,
+            plan: cpu_plan().unwrap(),
         },
     )
     .unwrap()
@@ -363,6 +364,7 @@ fn prefill_speed_by_threads_and_dtype() {
                     threads: t,
                     max_context: MAX_CONTEXT,
                     hidden_states: false,
+                    plan: cpu_plan().unwrap(),
                 },
             )
             .unwrap();

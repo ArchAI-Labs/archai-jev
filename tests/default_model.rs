@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use _core::Calibration;
 use _core::calibration::calibrated_softmax;
-use _core::engine::llama::{LlamaConfig, LlamaForward};
+use _core::engine::llama::{LlamaConfig, LlamaForward, cpu_plan};
 use _core::heads::LettersHead;
 use _core::model_scorer::ModelScorer;
 use _core::models::manifest::Target;
@@ -103,6 +103,7 @@ fn the_engine_matches_the_oracle_on_the_default_model() {
             threads,
             max_context: 512,
             hidden_states: false,
+            plan: cpu_plan().unwrap(),
         },
     )
     .unwrap();
@@ -278,6 +279,7 @@ fn the_median_latency_is_within_the_proposed_limits() {
             threads: THREADS,
             max_context: 512,
             hidden_states: false,
+            plan: cpu_plan().unwrap(),
         },
     )
     .unwrap();

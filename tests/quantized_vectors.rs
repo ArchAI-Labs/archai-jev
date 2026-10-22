@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use _core::Calibration;
 use _core::calibration::calibrated_softmax;
-use _core::engine::llama::{LlamaConfig, LlamaForward};
+use _core::engine::llama::{LlamaConfig, LlamaForward, cpu_plan};
 use _core::heads::KeyLogProbHead;
 use _core::json_strict::{Json, parse};
 use _core::model_scorer::ModelScorer;
@@ -101,6 +101,7 @@ fn scorer_with_cache(gguf: &Path, tokenizer: &Path, threads: i32, cache: u64) ->
             threads,
             max_context: MAX_CONTEXT,
             hidden_states: false,
+            plan: cpu_plan().unwrap(),
         },
     )
     .unwrap()

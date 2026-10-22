@@ -10,7 +10,7 @@
 
 use std::num::NonZeroU32;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::context::params::{LlamaContextParams, LlamaPoolingType};
@@ -18,15 +18,18 @@ use llama_cpp_2::context::session::{LlamaStateSeqFlags, SeqState};
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::LlamaModel;
-use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::token::LlamaToken;
 
-use super::cpu::{self, HostCpu};
+use super::cpu::HostCpu;
+use super::device::OffloadPlan;
 use super::waves::plan_waves;
 use super::{Forward, Output, OutputSpec, Session, Snapshot};
 use crate::control::{Control, NoControl};
 use crate::error::{Error, Result};
 use crate::pool::{PoolStats, Slot, SlotPool};
+
+mod device;
+pub use device::{LlamaProbe, compiled_backends, cpu_plan, model_params, prepare_model};
 
 fn inference(detail: impl Into<String>) -> Error {
     Error::Inference {
@@ -39,6 +42,8 @@ fn backend() -> Result<&'static LlamaBackend> {
     static BACKEND: OnceLock<std::result::Result<LlamaBackend, String>> = OnceLock::new();
     BACKEND
         .get_or_init(|| {
+            // before init: starting a GPU backend prints a banner that `void_logs` is too late for
+            device::quiet_logs();
             LlamaBackend::init()
                 .map(|mut b| {
                     b.void_logs();
@@ -59,6 +64,9 @@ pub struct LlamaConfig {
     pub max_context: u32,
     /// Read hidden states (a pointer head) instead of logits (a letters head).
     pub hidden_states: bool,
+    /// Where the model runs: the layers, the one device, and whether the scheduler may move
+    /// operations to a GPU by itself (spec 011). Never left to the defaults of llama.cpp.
+    pub plan: OffloadPlan,
 }
 
 /// A GGUF model loaded in llama.cpp.
@@ -66,6 +74,10 @@ pub struct LlamaForward {
     model: LlamaModel,
     config: LlamaConfig,
     pool: SlotPool,
+    /// The device of the plan as the engine reports it, for the identity of a saved prefix.
+    device_label: String,
+    /// `engine_fingerprint`, kept: every snapshot carries it and only restores into the same.
+    engine: Arc<str>,
     /// Longest option key the model scores (spec 010); `0` = the model reads no keys.
     key_tokens: u32,
     /// How many keys continue together in one decode (one llama.cpp sequence each); `1` = one
@@ -85,19 +97,25 @@ impl LlamaForward {
     /// Load the GGUF at `path` (already checked by model loading).
     ///
     /// # Errors
-    /// [`Error::Inference`] if the CPU lacks AVX2/FMA/F16C/BMI2 or llama.cpp cannot load the file.
+    /// [`Error::Inference`] if the CPU lacks AVX2/FMA/F16C/BMI2 (whatever the device), the plan names
+    /// a device the engine does not have, or llama.cpp cannot load the file.
     pub fn load(path: &Path, config: LlamaConfig) -> Result<Self> {
-        cpu::check(&HostCpu)?;
-        let model = LlamaModel::load_from_file(backend()?, path, &LlamaModelParams::default())
+        let params = prepare_model(&config.plan, &HostCpu)?;
+        let device_label = device::device_label(&config.plan)?;
+        let model = LlamaModel::load_from_file(backend()?, path, &params)
             .map_err(|e| inference(format!("cannot load {}: {e}", path.display())))?;
         let budget = usize::try_from(config.threads).unwrap_or(1);
-        Ok(LlamaForward {
+        let mut forward = LlamaForward {
             model,
             config,
             pool: SlotPool::new(1, budget),
+            device_label,
+            engine: Arc::from(""),
             key_tokens: 0,
             key_wave: 1,
-        })
+        };
+        forward.engine = Arc::from(forward.engine_fingerprint());
+        Ok(forward)
     }
 
     /// Let the model score option keys of up to `max_key_tokens` tokens
@@ -107,6 +125,7 @@ impl LlamaForward {
     pub fn with_key_scoring(mut self, max_key_tokens: u32) -> Self {
         self.key_tokens = max_key_tokens;
         self.key_wave = KEY_WAVE;
+        self.engine = Arc::from(self.engine_fingerprint());
         self
     }
 
@@ -116,6 +135,7 @@ impl LlamaForward {
     #[must_use]
     pub fn with_key_wave(mut self, keys: u32) -> Self {
         self.key_wave = keys.max(1);
+        self.engine = Arc::from(self.engine_fingerprint());
         self
     }
 
@@ -161,51 +181,103 @@ impl LlamaForward {
     /// The engine and the settings of the contexts it creates, as a string for the identity of a
     /// saved prefix: built from what is really set, so changing a parameter changes the key.
     pub fn engine_fingerprint(&self) -> String {
-        if self.key_tokens > 0 {
-            let rows = self.sequences();
-            return format!(
-                "llama-cpp-2=0.1.157; n_ctx=({}+{})x{rows}; n_batch={}; n_ubatch={}; n_seq_max={rows}; embeddings={}; kv=library default",
-                self.config.max_context,
-                self.key_tokens,
-                self.config.max_context,
-                self.config.max_context,
-                self.config.hidden_states
-            );
-        }
-        format!(
-            "llama-cpp-2=0.1.157; n_ctx={}x2; n_batch={}; n_ubatch={}; n_seq_max=2; embeddings={}; kv=library default",
-            self.config.max_context,
-            self.config.max_context,
-            self.config.max_context,
-            self.config.hidden_states
+        fingerprint_text(
+            &self.config,
+            self.key_tokens,
+            self.sequences(),
+            &self.device_label,
         )
     }
 
     fn context_params(&self, threads: i32) -> Result<LlamaContextParams> {
-        // sequence 0 holds the state, sequence 1 the question being run and, if the model scores
-        // option keys, sequences 2.. the continuation of the keys of one wave
-        let rows = self.sequences();
-        let n_ctx = self
-            .config
-            .max_context
-            .saturating_add(self.key_tokens)
-            .checked_mul(rows)
-            .and_then(NonZeroU32::new)
-            .ok_or_else(|| inference("max_context is zero or too large"))?;
-        let mut params = LlamaContextParams::default()
-            .with_n_ctx(Some(n_ctx))
-            .with_n_batch(self.config.max_context)
-            .with_n_ubatch(self.config.max_context)
-            .with_n_seq_max(rows)
-            .with_n_threads(threads)
-            .with_n_threads_batch(threads);
-        if self.config.hidden_states {
-            params = params
-                .with_embeddings(true)
-                .with_pooling_type(LlamaPoolingType::None);
-        }
-        Ok(params)
+        context_params_for(&self.config, self.key_tokens, self.sequences(), threads)
     }
+}
+
+/// The text of the identity of the engine: every setting that changes the numbers or where they
+/// are computed, including the device (backend, name, description) and the offload plan. Pure,
+/// so a test can show that each of them changes it.
+fn fingerprint_text(
+    config: &LlamaConfig,
+    key_tokens: u32,
+    rows: u32,
+    device_label: &str,
+) -> String {
+    let plan = &config.plan;
+    let device = format!(
+        "device={device_label}; layers={:?}; op_offload={}",
+        plan.layers, plan.op_offload
+    );
+    if key_tokens > 0 {
+        return format!(
+            "llama-cpp-2=0.1.157; n_ctx=({}+{key_tokens})x{rows}; n_batch={}; n_ubatch={}; n_seq_max={rows}; embeddings={}; kv=library default; {device}",
+            config.max_context, config.max_context, config.max_context, config.hidden_states
+        );
+    }
+    format!(
+        "llama-cpp-2=0.1.157; n_ctx={}x2; n_batch={}; n_ubatch={}; n_seq_max=2; embeddings={}; kv=library default; {device}",
+        config.max_context, config.max_context, config.max_context, config.hidden_states
+    )
+}
+
+/// The parameters of every context of the model. `rows` is how many sequences a context holds:
+/// the state, the question and, for a head that scores keys, one per key of a wave. Pure.
+///
+/// `op_offload` comes from the plan, never from the default (`true`).
+fn context_params_for(
+    config: &LlamaConfig,
+    key_tokens: u32,
+    rows: u32,
+    threads: i32,
+) -> Result<LlamaContextParams> {
+    // sequence 0 holds the state, sequence 1 the question being run and, if the model scores
+    // option keys, sequences 2.. the continuation of the keys of one wave
+    let n_ctx = config
+        .max_context
+        .saturating_add(key_tokens)
+        .checked_mul(rows)
+        .and_then(NonZeroU32::new)
+        .ok_or_else(|| inference("max_context is zero or too large"))?;
+    let mut params = LlamaContextParams::default()
+        .with_n_ctx(Some(n_ctx))
+        .with_n_batch(config.max_context)
+        .with_n_ubatch(config.max_context)
+        .with_n_seq_max(rows)
+        .with_n_threads(threads)
+        .with_n_threads_batch(threads)
+        .with_op_offload(config.plan.op_offload);
+    if config.hidden_states {
+        params = params
+            .with_embeddings(true)
+            .with_pooling_type(LlamaPoolingType::None);
+    }
+    Ok(params)
+}
+
+/// What a snapshot holds: the saved sequence and the identity of the engine that made it. A
+/// snapshot only restores into a context with the same identity, so one made on a GPU never goes
+/// into a context on the CPU (or on another GPU): the bytes would be those of another device.
+struct Saved<T> {
+    engine: Arc<str>,
+    state: T,
+}
+
+/// The saved state inside `snapshot`, if it is a `T` made by an engine with the identity `engine`.
+///
+/// # Errors
+/// [`Error::Inference`] for a snapshot of another type (another engine) or of another
+/// configuration of this one (another device, other context settings).
+fn open<'s, T: std::any::Any>(snapshot: &'s Snapshot, engine: &str) -> Result<&'s T> {
+    let saved = snapshot
+        .downcast_ref::<Saved<T>>()
+        .ok_or_else(|| inference("the snapshot was not made by this engine"))?;
+    if *saved.engine != *engine {
+        return Err(inference(
+            "the snapshot was made by another engine configuration (another device or other \
+             context settings) and cannot be restored here",
+        ));
+    }
+    Ok(&saved.state)
 }
 
 /// Decode `tokens` on sequence `seq` from position `start`; outputs only where `wanted` says.
@@ -231,6 +303,8 @@ fn decode(
 
 struct LlamaSession<'a> {
     ctx: LlamaContext<'a>,
+    /// The engine fingerprint of the model this session belongs to.
+    engine: Arc<str>,
     /// Tokens on sequence 0, the part every question starts from.
     shared_len: usize,
     hidden_states: bool,
@@ -485,9 +559,7 @@ impl Session for LlamaSession<'_> {
                 "a snapshot can only be restored on an empty session",
             ));
         }
-        let saved = snapshot
-            .downcast_ref::<SeqState>()
-            .ok_or_else(|| inference("the snapshot was not made by this engine"))?;
+        let saved = open::<SeqState>(snapshot, &self.engine)?;
         self.ctx
             .state_seq_set(saved, 0)
             .map_err(|e| inference(format!("cannot restore the saved state: {e}")))?;
@@ -513,7 +585,15 @@ impl Session for LlamaSession<'_> {
             .ctx
             .state_seq_get(0, LlamaStateSeqFlags::empty())
             .map_err(|e| inference(format!("cannot save the state: {e}")))?;
-        Ok(Snapshot::new(self.shared_len, saved.byte_len(), saved))
+        let bytes = saved.byte_len();
+        Ok(Snapshot::new(
+            self.shared_len,
+            bytes,
+            Saved {
+                engine: Arc::clone(&self.engine),
+                state: saved,
+            },
+        ))
     }
 
     fn row_segments(&mut self, segments: &[&[u32]], outputs: &[OutputSpec]) -> Result<Vec<Output>> {
@@ -593,6 +673,7 @@ impl LlamaForward {
         slot.note_context_created();
         Ok(LlamaSession {
             ctx,
+            engine: Arc::clone(&self.engine),
             shared_len: 0,
             hidden_states: self.config.hidden_states,
             key_tokens: self.key_tokens,
@@ -626,3 +707,6 @@ impl Forward for LlamaForward {
         Ok(Box::new(self.start(control)?))
     }
 }
+
+#[cfg(test)]
+mod tests;

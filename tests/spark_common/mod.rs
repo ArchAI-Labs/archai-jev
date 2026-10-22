@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use _core::Calibration;
-use _core::engine::llama::{LlamaConfig, LlamaForward};
+use _core::engine::llama::{LlamaConfig, LlamaForward, cpu_plan};
 use _core::heads::AnswerLettersHead;
 use _core::json_big::parse_with_big_ints;
 use _core::json_strict::Json;
@@ -140,6 +140,7 @@ impl Model {
                 threads: _core::models::llama_backend::default_threads(),
                 max_context: 2048,
                 hidden_states: false,
+                plan: cpu_plan().unwrap(),
             },
         )
         .expect("the model loads");
@@ -173,6 +174,7 @@ impl Model {
                 threads: _core::models::llama_backend::default_threads(),
                 max_context: 2048,
                 hidden_states: false,
+                plan: cpu_plan().unwrap(),
             },
         )
         .expect("the model loads")

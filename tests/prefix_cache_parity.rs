@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use _core::Calibration;
 use _core::calibration::calibrated_softmax;
-use _core::engine::llama::{LlamaConfig, LlamaForward};
+use _core::engine::llama::{LlamaConfig, LlamaForward, cpu_plan};
 use _core::heads::LettersHead;
 use _core::model_scorer::ModelScorer;
 use _core::models::manifest::Target;
@@ -425,6 +425,7 @@ fn engines() -> Option<Engines> {
                 threads,
                 max_context: 512,
                 hidden_states: false,
+                plan: cpu_plan().unwrap(),
             },
         )
         .unwrap(),

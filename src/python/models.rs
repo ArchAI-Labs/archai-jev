@@ -14,7 +14,7 @@ use pyo3::types::PyDict;
 use super::classes::PyModel;
 use crate::convert::Qwen35Converter;
 use crate::convert::headpt::HeadPtReader;
-use crate::engine::device::CpuOnlyProbe;
+use crate::engine::llama::LlamaProbe;
 use crate::error::Error;
 use crate::hub::cache::{self, CacheEnv, Os};
 use crate::hub::config::HubConfig;
@@ -240,7 +240,7 @@ pub fn load_model<'py>(
             registry,
             hub: &hub,
             backend: &backend,
-            devices: &CpuOnlyProbe,
+            devices: &LlamaProbe,
             transport: &transport,
             observer: &LoggingObserver,
             cancel: &SignalCancel,

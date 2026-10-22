@@ -12,6 +12,7 @@ use super::head::HeadReader;
 use super::incompat::Incompat;
 use super::manifest::HeadSpec;
 use crate::convert::headpt::HeadPtReader;
+use crate::engine::device::OffloadPlan;
 use crate::engine::llama::{LlamaConfig, LlamaForward};
 use crate::error::{Error, Result};
 use crate::heads::{AnswerLettersHead, Head, KeyLogProbHead, LettersHead, PointerHead};
@@ -166,6 +167,7 @@ impl Backend for LlamaBackend {
                 threads: self.threads,
                 max_context,
                 hidden_states,
+                plan: OffloadPlan::for_device(&checkpoint.device),
             },
         )?
         .with_max_concurrency(self.max_concurrency);

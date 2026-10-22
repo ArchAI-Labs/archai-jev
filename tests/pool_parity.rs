@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::thread;
 
 use _core::Calibration;
-use _core::engine::llama::{LlamaConfig, LlamaForward};
+use _core::engine::llama::{LlamaConfig, LlamaForward, cpu_plan};
 use _core::heads::LettersHead;
 use _core::model_scorer::{ModelScorer, Run};
 use _core::models::manifest::Target;
@@ -79,6 +79,7 @@ fn load(gguf: &std::path::Path, k: usize) -> Arc<LlamaForward> {
                 threads,
                 max_context: 512,
                 hidden_states: false,
+                plan: cpu_plan().unwrap(),
             },
         )
         .unwrap()

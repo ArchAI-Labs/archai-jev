@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
-use _core::engine::llama::{LlamaConfig, LlamaForward};
+use _core::engine::llama::{LlamaConfig, LlamaForward, cpu_plan};
 use _core::engine::{Forward, OutputSpec};
 use _core::models::testing::{assets, golden};
 
@@ -32,6 +32,7 @@ fn load(gguf: &std::path::Path, k: usize) -> Arc<LlamaForward> {
                 threads,
                 max_context: 512,
                 hidden_states: false,
+                plan: cpu_plan().unwrap(),
             },
         )
         .unwrap()
