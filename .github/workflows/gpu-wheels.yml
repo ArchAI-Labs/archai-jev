@@ -102,7 +102,7 @@ jobs:
       - name: System packages (loader, headers, shader compiler)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev pkg-config libvulkan-dev glslc patchelf
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev pkg-config libvulkan-dev glslc spirv-headers patchelf
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"

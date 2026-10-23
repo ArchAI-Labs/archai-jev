@@ -73,6 +73,9 @@ jobs:
     env:
       # One architecture is enough to prove the build; the architectures of a published wheel are decided in T14.
       CMAKE_CUDA_ARCHITECTURES: "120"
+      # The CUDA objects go into a shared library: without -fPIC the link fails with "relocation R_X86_64_PC32 cannot be
+      # used against symbol 'stderr'" (first run of this job).
+      CMAKE_CUDA_FLAGS: "-Xcompiler -fPIC"
     steps:
       - name: System packages
         run: |
@@ -189,7 +192,9 @@ jobs:
         shell: pwsh
         run: |
           $pyd = Get-ChildItem python\archai_jev -Filter "_core*.pyd" | Select-Object -First 1
-          $deps = & "$env:ProgramFiles\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" /dependents $pyd.FullName 2>&1 | Select-String "dll"
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'Hostx64.x64' } | Select-Object -First 1
+          $deps = if ($dumpbin) { & $dumpbin.FullName /dependents $pyd.FullName 2>&1 | Select-String "dll" } else { "dumpbin.exe not found" }
           @(
             "### cuda-windows / ${{ matrix.feature }}",
             "- import and device smoke: ``${{ steps.smoke.outcome }}`` (``cuda`` is expected to fail where there is no driver, ``cuda-no-vmm`` is not)",
@@ -213,7 +218,7 @@ jobs:
       - name: System packages (loader, shader compiler, Mesa software GPU)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev pkg-config libvulkan-dev glslc mesa-vulkan-drivers vulkan-tools
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev pkg-config libvulkan-dev glslc spirv-headers mesa-vulkan-drivers vulkan-tools
           vulkaninfo --summary || true
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -306,7 +311,10 @@ jobs:
         run: uv sync --no-install-project
       - name: Point PyO3 at the venv interpreter
         run: echo "PYO3_PYTHON=$(uv run --no-sync python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+      # PowerShell, not bash: in Git's bash `link` is the coreutils program (Git\usr\bin\link.exe) and rustc takes it
+      # for the linker of MSVC (first run of this job).
       - name: Build the extension with the feature
+        shell: pwsh
         run: uv run --no-sync maturin develop --uv --features testing,vulkan
       # The extension imports vulkan-1.dll (the loader): the SDK's folder is given to Python by hand. Without it, or on
       # a machine with no loader, the import fails: that is what the smoke of the published wheel (T15) must answer.
