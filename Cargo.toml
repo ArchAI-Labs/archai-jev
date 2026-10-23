@@ -49,8 +49,10 @@ quant-study = []
 # `CUDA_PATH_V12_x` and `CMAKE_CUDA_ARCHITECTURES` in the environment.
 cuda = ["llama-cpp-2/cuda"]
 # `cuda-no-vmm`: the same without the import of `nvcuda.dll`, so that `import archai_jev` also
-# works on a machine with no NVIDIA driver (measured in the spike S14).
-cuda-no-vmm = ["llama-cpp-2/cuda-no-vmm"]
+# works on a machine with no NVIDIA driver (measured in the spike S14). It includes `cuda`: the
+# backend list of the library reads `cuda`, and without it this build reported no CUDA at all
+# (found by the first run of gpu-build.yml).
+cuda-no-vmm = ["cuda", "llama-cpp-2/cuda-no-vmm"]
 # `vulkan`: NVIDIA, AMD and Intel; needs the Vulkan SDK (`VULKAN_SDK`) and, on Windows,
 # `CMAKE_GENERATOR=Ninja` with the MSVC environment (the Visual Studio generator fails).
 vulkan = ["llama-cpp-2/vulkan"]

@@ -8,7 +8,8 @@
 //!   catch.
 //! * `the_named_device_agrees_with_the_cpu`: with `ARCHAI_JEV_TEST_DEVICE=cuda:0` (or `vulkan:0`,
 //!   the name that `available_devices()` prints) the same decode runs on that device and agrees
-//!   with the CPU. This is the check that a Vulkan build runs on Mesa's software GPU (lavapipe).
+//!   with the CPU (by hand, on a machine with a GPU: no CI runner has one, and ggml-vulkan ignores software
+//!   devices such as Mesa's lavapipe).
 //!   Without the variable it does nothing.
 //!
 //! (The tiny checkpoint of `tests/data/qwen35-mini` cannot be used: it has the structure of a model
@@ -29,8 +30,7 @@ use _core::engine::llama::{LlamaConfig, LlamaForward, LlamaProbe, cpu_plan};
 use _core::engine::{Forward, Output, OutputSpec};
 
 const MAX_CONTEXT: u32 = 512;
-/// A minute by default; a software GPU (Mesa lavapipe) is slower and CI says so with
-/// `ARCHAI_JEV_TEST_LIMIT_SECS`.
+/// A minute by default; a slower machine says so with `ARCHAI_JEV_TEST_LIMIT_SECS`.
 fn limit() -> Duration {
     let secs = std::env::var("ARCHAI_JEV_TEST_LIMIT_SECS")
         .ok()

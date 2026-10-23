@@ -127,6 +127,29 @@ fn compiled_backends_follow_the_features() {
 }
 
 #[test]
+fn every_gpu_feature_turns_on_its_backend() {
+    // `compiled_backends()` reads the features of THIS crate: a feature that builds a backend but
+    // does not turn the backend's own feature on makes the build report no GPU (cuda-no-vmm did).
+    let cargo =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap();
+    let line = |name: &str| {
+        cargo
+            .lines()
+            .find(|l| l.starts_with(&format!("{name} = [")))
+            .unwrap_or_else(|| panic!("no feature {name}"))
+            .to_string()
+    };
+    assert!(
+        line("cuda-no-vmm").contains("\"cuda\""),
+        "{}",
+        line("cuda-no-vmm")
+    );
+    if cfg!(feature = "cuda-no-vmm") {
+        assert!(compiled_backends().contains(&BackendKind::Cuda));
+    }
+}
+
+#[test]
 fn the_probe_lists_this_machine() {
     let devices = LlamaProbe.devices();
     let cpus: Vec<_> = devices

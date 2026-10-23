@@ -4,7 +4,8 @@
 # What it can and cannot prove. No hosted runner has a GPU, so these jobs prove that each backend COMPILES, that the
 # result IMPORTS and answers on a machine with no GPU or driver, that the CPU path still works in such a build
 # (the Metal build that hung for minutes on a VM is the fault this guards against), and, on Mesa's software GPU
-# (lavapipe), that a Vulkan build really decodes on a non-CPU device. CUDA and Metal numbers on real hardware are
+# (lavapipe) was meant to prove that a Vulkan build decodes on a non-CPU device, but ggml-vulkan ignores devices of
+# type CPU (the first run listed only `cpu`): no runner proves it; the real GPU of the development machine does. CUDA and Metal numbers on real hardware are
 # checked by hand (task T12 of the spec), on the development machine.
 #
 # Each job ends with a decode of the default model (Q8_0, cached after the first run): the CPU plan in every job, and
@@ -147,16 +148,21 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v6
+      # `-s` alone installs every component: the names of single components ("nvcc_12.9", "thrust_12.9", ...) made the
+      # installer exit with 0xE0E00019 on the first run (a name that does not exist in this release is an error).
       - name: Install the CUDA Toolkit (checked against the SHA-256 above)
         shell: pwsh
         run: |
           Invoke-WebRequest $env:CUDA_INSTALLER_URL -OutFile cuda.exe -UseBasicParsing
           $hash = (Get-FileHash cuda.exe -Algorithm SHA256).Hash.ToLower()
           if ($hash -ne $env:CUDA_INSTALLER_SHA256) { throw "cuda.exe has SHA-256 $hash, expected $env:CUDA_INSTALLER_SHA256" }
-          $p = Start-Process .\cuda.exe -ArgumentList "-s","nvcc_12.9","cudart_12.9","cublas_12.9","cublas_dev_12.9","cccl_12.9","thrust_12.9","visual_studio_integration_12.9" -Wait -PassThru
+          $p = Start-Process .\cuda.exe -ArgumentList "-s" -Wait -PassThru
           "installer exit code: $($p.ExitCode)"
           $root = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9"
-          if (-not (Test-Path "$root\bin\nvcc.exe")) { throw "nvcc.exe is not in $root\bin" }
+          if (-not (Test-Path "$root\bin\nvcc.exe")) {
+            Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit" -ErrorAction SilentlyContinue | Select-Object FullName
+            throw "nvcc.exe is not in $root\bin"
+          }
           "CUDA_PATH=$root" >> $env:GITHUB_ENV
           "CUDA_PATH_V12_9=$root" >> $env:GITHUB_ENV
           "CMAKE_CUDA_ARCHITECTURES=120" >> $env:GITHUB_ENV
@@ -205,7 +211,7 @@ jobs:
         if: matrix.feature == 'cuda-no-vmm'
         run: uv run --no-sync pytest -ra --tb=short -p no:cacheprovider -k device
 
-  # ---- Vulkan on Linux: also the one place where a non-CPU backend RUNS (Mesa lavapipe, Vulkan on the CPU) -----------
+  # ---- Vulkan on Linux: compile, import, and the CPU plan in a build with the Vulkan loader but no usable GPU ---------
   vulkan-linux:
     name: vulkan-linux
     runs-on: ubuntu-24.04
@@ -240,8 +246,10 @@ jobs:
           grep -q "needs a macOS target" metal.log || { cat metal.log; exit 1; }
       - name: Build the extension with the feature
         run: uv run --no-sync maturin develop --uv --features testing,vulkan
-      - name: Import and devices (lavapipe is the GPU of this runner)
-        run: uv run --no-sync python ci/gpu/smoke_devices.py --expect cpu,vulkan --expect-device vulkan:0
+      # Mesa's lavapipe (a software Vulkan device of type CPU) is installed, and ggml-vulkan skips it on purpose
+      # ("If only CPU devices are available, return without devices"): this runner has no Vulkan device for ggml.
+      - name: Import and devices (the loader is there, no device for ggml)
+        run: uv run --no-sync python ci/gpu/smoke_devices.py --expect cpu,vulkan --no-gpu
       - name: Device tests of the Python layer
         run: uv run --no-sync pytest -ra --tb=short -p no:cacheprovider -k device
       - name: Cache the model file
@@ -253,12 +261,9 @@ jobs:
       - name: Download the model file
         if: steps.gguf.outputs.cache-hit != 'true'
         run: curl -fL --retry 4 --retry-delay 10 -o model.gguf "$GGUF_URL"
-      # Not a tolerance check (the model has no Vulkan row): llama.cpp runs the model on lavapipe and the numbers agree
-      # with the CPU's. A software GPU is slow, hence the long limit.
-      - name: Decode on the CPU plan and on Vulkan (lavapipe)
+      - name: Decode with the CPU plan in a Vulkan build
         env:
-          ARCHAI_JEV_TEST_DEVICE: vulkan:0
-          ARCHAI_JEV_TEST_LIMIT_SECS: "900"
+          ARCHAI_JEV_TEST_LIMIT_SECS: "180"
         run: |
           echo "$GGUF_SHA256  model.gguf" | sha256sum -c -
           ARCHAI_JEV_TEST_V2_GGUF="$PWD/model.gguf" cargo test --release --features vulkan --test gpu_smoke -- --nocapture
