@@ -167,6 +167,25 @@ jobs:
           "CUDA_PATH_V12_9=$root" >> $env:GITHUB_ENV
           "CMAKE_CUDA_ARCHITECTURES=120" >> $env:GITHUB_ENV
           "$root\bin" >> $env:GITHUB_PATH
+      # The "Visual Studio" generator of CMake needs the CUDA integration for MSBuild, which the installer puts only in
+      # the Visual Studio versions it knows (the runner has a newer one: "No CUDA toolset found", first run of this
+      # job). Ninja with the MSVC environment needs no integration, as in the Vulkan job. Visual Studio 2022 if there is
+      # one (the host compiler that CUDA 12.9 supports); otherwise the newest one, with nvcc told to accept it.
+      - name: MSVC environment and Ninja
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -version "[17.0,18.0)" -property installationPath
+          if (-not $vs) {
+            $vs = & $vswhere -latest -property installationPath
+            "CMAKE_CUDA_FLAGS=-allow-unsupported-compiler" >> $env:GITHUB_ENV
+            "::warning::no Visual Studio 2022 on this runner: using $vs with -allow-unsupported-compiler"
+          }
+          cmd /c "`"$vs\Common7\Tools\VsDevCmd.bat`" -arch=x64 -host_arch=x64 >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$' -and $matches[1] -notin @('GITHUB_ENV', 'GITHUB_PATH')) { "$($matches[1])=$($matches[2])" >> $env:GITHUB_ENV }
+          }
+          "$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja" >> $env:GITHUB_PATH
+          "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
       # Windows: the C++ object paths of llama.cpp are deep; a short target dir keeps MSBuild under MAX_PATH.
       - name: Windows build environment
         run: |
@@ -186,6 +205,7 @@ jobs:
       - name: Point PyO3 at the venv interpreter
         run: echo "PYO3_PYTHON=$(uv run --no-sync python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
       - name: Build the extension with the feature
+        shell: pwsh
         run: uv run --no-sync maturin develop --uv --features testing,${{ matrix.feature }}
       - name: Import, devices and the paths without a GPU (no driver on this runner)
         id: smoke
