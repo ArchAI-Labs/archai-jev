@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Jev.model_info.device` says where the model runs. New exceptions: `DeviceUnavailableError` (a named
   device the build or the machine lacks) and `DeviceFallbackWarning` (`device="auto"` used the CPU
   although a GPU backend is compiled in and could not be used; never emitted by a CPU wheel).
+- **The default model is verified on CUDA and Vulkan** (builds from source with the `cuda` or `vulkan`
+  Cargo feature; the wheels on PyPI stay CPU-only). `device="cuda:0"` or `"vulkan:1"` runs the
+  self-check of the default model (Q8_0) against tolerances of 0.097 (CUDA) and 0.057 (Vulkan) in
+  probability, both below the CPU one (0.1). Any other model or precision has no row on a GPU and is
+  refused there with `DeviceUnavailableError`; so is Metal, which was never measured.
 - **A family of general models that answer with the letter of an option** (`spark2_5-letters`, head
   `answer_letters`, template `spark-decisions` v3), for models published as GGUF that read a
   multiple-choice prompt and answer with `A`, `B`, ...: the answer is the logit of those letters at

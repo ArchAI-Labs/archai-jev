@@ -84,9 +84,18 @@ pub fn lookup(
     }
 }
 
-/// The GPU rows. None exist yet in a release: they are added by decision after the measures of
-/// spec 011 (task T12), never to make a test pass. Under `testing` there is one, to exercise the
-/// machinery without a GPU.
+/// The GPU rows, added by decision after the measures of spec 011 (D63), never to make a test
+/// pass, and each one no wider than the CPU row of the same variant. A model with no row on a
+/// backend does not answer there. Under `testing` there is one more, to exercise the machinery
+/// without a GPU.
+///
+/// The default model (`qwen2-keys`, Q8_0) against the reference in fp32 on the NVIDIA GPU of the
+/// development machine: largest gap on CUDA 0.0603 (0.0543 through the public API, 0.0603 with the
+/// request in one decode) and on Vulkan 0.0357, over three question sets (87, 10 and 8 questions
+/// that the limits accept). Each row is 1.6x the largest gap seen on any path, the same factor as
+/// the CPU row (D54), and below the CPU row of 0.1. The
+/// integrated GPU of the same machine (Vulkan, 0.0698) was not admitted to the tolerance, and
+/// Metal was never measured: neither has a row.
 #[allow(unused_variables)]
 fn gpu_row(
     family: &str,
@@ -95,6 +104,14 @@ fn gpu_row(
     backend: BackendKind,
 ) -> Option<Tolerance> {
     match (family, dtype, reference, backend) {
+        ("qwen2-keys", "q8_0", Reference::FullPrecision, BackendKind::Cuda) => Some(Tolerance {
+            logit: None,
+            p: 0.097,
+        }),
+        ("qwen2-keys", "q8_0", Reference::FullPrecision, BackendKind::Vulkan) => Some(Tolerance {
+            logit: None,
+            p: 0.057,
+        }),
         #[cfg(feature = "testing")]
         ("test-fake", "f32", Reference::FullPrecision, BackendKind::Cuda) => Some(Tolerance {
             logit: Some(5e-4),
@@ -172,11 +189,25 @@ fn cpu_row(family: &str, dtype: &str, reference: Reference) -> Option<Tolerance>
 /// Every `(family, dtype, reference, backend)` that has a tolerance (used by tests that walk the
 /// table).
 pub fn all() -> Vec<(&'static str, &'static str, Reference, BackendKind)> {
-    #[allow(unused_mut)] // only the testing build adds a GPU row
+    #[allow(unused_mut)] // only the testing build adds another GPU row
     let mut rows: Vec<_> = cpu_rows()
         .into_iter()
         .map(|(f, d, r)| (f, d, r, BackendKind::Cpu))
         .collect();
+    rows.extend([
+        (
+            "qwen2-keys",
+            "q8_0",
+            Reference::FullPrecision,
+            BackendKind::Cuda,
+        ),
+        (
+            "qwen2-keys",
+            "q8_0",
+            Reference::FullPrecision,
+            BackendKind::Vulkan,
+        ),
+    ]);
     #[cfg(feature = "testing")]
     rows.push((
         "test-fake",
@@ -312,24 +343,54 @@ mod tests {
                 Some(Tolerance { logit, p }),
                 "{family} {dtype}"
             );
-            // and none of them answers on a GPU backend: no row there, no answer there
+            // and none of them answers on a GPU backend, except the two that were measured
             for gpu in BackendKind::GPU_BY_PREFERENCE {
+                let measured = (family, dtype) == ("qwen2-keys", "q8_0")
+                    && matches!(gpu, BackendKind::Cuda | BackendKind::Vulkan);
                 assert_eq!(
-                    super::lookup(family, dtype, FP, gpu),
-                    None,
+                    super::lookup(family, dtype, FP, gpu).is_some(),
+                    measured,
                     "{family} {dtype} {gpu}"
                 );
             }
         }
-        // the real families have no GPU row at all until a decision adds one (T12)
-        for (f, _, _, b) in all() {
-            if b != BackendKind::Cpu {
-                assert!(
-                    f.starts_with("test-"),
-                    "{f} has a GPU row without a decision"
+        // a GPU row of a real family needs a decision: these are the ones of D63
+        for (f, d, _, b) in all() {
+            if b != BackendKind::Cpu && !f.starts_with("test-") {
+                assert_eq!(
+                    (f, d),
+                    ("qwen2-keys", "q8_0"),
+                    "{f} {d} {b} has no decision"
                 );
+                assert!(matches!(b, BackendKind::Cuda | BackendKind::Vulkan), "{b}");
             }
         }
+    }
+
+    #[test]
+    fn the_gpu_rows_of_the_default_model_follow_the_measures() {
+        // 1.6x the largest gap seen (0.0603 on CUDA, 0.0357 on Vulkan), below the CPU row (0.1)
+        let at = |b| super::lookup("qwen2-keys", "q8_0", FP, b).unwrap();
+        assert_eq!(at(BackendKind::Cuda).p, 0.097);
+        assert_eq!(at(BackendKind::Vulkan).p, 0.057);
+        assert!((0.0603_f64 * 1.6 - 0.097).abs() < 1e-3);
+        assert!((0.0357_f64 * 1.6 - 0.057).abs() < 1e-3);
+        assert_eq!(at(BackendKind::Cuda).logit, None);
+        // Metal was never measured, and no other precision or head has a GPU row
+        assert_eq!(
+            super::lookup("qwen2-keys", "q8_0", FP, BackendKind::Metal),
+            None
+        );
+        for other in ["f32", "bf16", "q4_k_m"] {
+            assert_eq!(
+                super::lookup("qwen2-keys", other, FP, BackendKind::Cuda),
+                None
+            );
+        }
+        assert_eq!(
+            super::lookup("qwen2-letters", "q8_0", FP, BackendKind::Cuda),
+            None
+        );
     }
 
     #[test]
