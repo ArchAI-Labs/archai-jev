@@ -137,7 +137,10 @@ jobs:
   # ---- CUDA on Windows: the installer of NVIDIA ------------------------------------------------------------------
   cuda-windows:
     name: cuda-windows / ${{ matrix.feature }}
-    runs-on: windows-latest
+    # Not windows-latest: it has only Visual Studio 2026 (MSVC 14.51), and nvcc 12.9 crashes on it (cudafe++ dies with
+    # ACCESS_VIOLATION). Windows 2022 has Visual Studio 2022, the host compiler that CUDA 12.9 supports and the one of the
+    # development machine.
+    runs-on: windows-2022
     timeout-minutes: 120
     strategy:
       fail-fast: false
