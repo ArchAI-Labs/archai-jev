@@ -185,6 +185,25 @@ fn auto_skips_integrated_gpus() {
 }
 
 #[test]
+fn an_integrated_gpu_is_refused_by_name() {
+    let fixture = with_row().build();
+    for device in ["vulkan", "vulkan:0"] {
+        let h = harness(FakeProbe::cpu_only().device(
+            BackendKind::Vulkan,
+            DeviceKind::Igpu,
+            "Intel(R) Graphics",
+        ));
+        let err = on(&h, &fixture, device).err().unwrap();
+        assert!(
+            matches!(err, Error::DeviceUnavailable(_)),
+            "{device}: {err:?}"
+        );
+        assert!(err.to_string().contains("integrated GPU"), "{err}");
+        assert_eq!(h.backend.runs(), 0, "nothing ran on it");
+    }
+}
+
+#[test]
 fn auto_and_explicit_use_the_verified_gpu() {
     let fixture = with_row().build();
     for device in ["auto", "cuda", "cuda:0"] {

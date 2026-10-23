@@ -217,15 +217,23 @@ fn auto_falls_back_with_a_reason() {
 
 #[test]
 fn auto_skips_integrated_gpus() {
-    // only an integrated Vulkan GPU: auto does not take it, says why, and naming it still works
+    // only an integrated Vulkan GPU: auto does not take it and says why
     let intel_only =
         FakeProbe::cpu_only().device(BackendKind::Vulkan, DeviceKind::Igpu, "Intel(R) Graphics");
     let got = chosen("auto", &intel_only, &every_row).unwrap();
     assert_eq!(got.name(), "cpu");
     assert!(got.fallback.unwrap().contains("only integrated GPUs"));
-    let explicit = chosen("vulkan", &intel_only, &every_row).unwrap();
-    assert_eq!(explicit.name(), "vulkan:0");
-    assert_eq!(explicit.device.kind, DeviceKind::Igpu);
+    // naming it is refused too: the tolerance row of the backend is the one of its discrete GPUs
+    for name in ["vulkan", "vulkan:0"] {
+        let err = chosen(name, &intel_only, &every_row).err().unwrap();
+        assert_eq!(
+            err,
+            Refusal::IntegratedGpu {
+                device: "vulkan:0".to_string()
+            }
+        );
+        assert!(err.to_string().contains("integrated GPU"), "{err}");
+    }
     // with the NVIDIA GPU also there, auto takes it and not the integrated one that comes first
     let vulkan_only = FakeProbe::cpu_only()
         .device(BackendKind::Vulkan, DeviceKind::Igpu, "Intel(R) Graphics")
@@ -322,7 +330,7 @@ fn offload_plan_for_a_gpu_has_one_device() {
     let copy = plan;
     assert_eq!(copy, plan);
     // every GPU backend gets the same shape of plan, each with its own engine index
-    for text in ["vulkan:0", "vulkan:1"] {
+    for text in ["cuda:0", "vulkan:1"] {
         let sel = chosen(text, &laptop, &every_row).unwrap();
         assert_eq!(sel.plan().device, sel.device.engine_index, "{text}");
         assert_eq!(sel.plan().layers, Layers::All, "{text}");
@@ -334,6 +342,11 @@ fn a_device_name_round_trips_through_the_grammar() {
     let laptop = FakeProbe::rtx_laptop();
     for d in laptop.devices() {
         let name = d.name();
+        if d.kind == DeviceKind::Igpu {
+            // a name the grammar accepts and the library refuses: the integrated GPU
+            assert!(chosen(&name, &laptop, &every_row).is_err(), "{name}");
+            continue;
+        }
         let sel = chosen(&name, &laptop, &every_row).unwrap();
         assert_eq!(sel.device, d, "{name}");
     }

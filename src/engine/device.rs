@@ -303,6 +303,12 @@ pub enum Refusal {
         /// The backend without a row.
         backend: BackendKind,
     },
+    /// The device is an integrated GPU: the tolerances were measured on discrete GPUs, and the
+    /// integrated one that was measured was slower than the processor and is not admitted.
+    IntegratedGpu {
+        /// The device asked for (`vulkan:0`).
+        device: String,
+    },
 }
 
 impl fmt::Display for Refusal {
@@ -330,6 +336,10 @@ impl fmt::Display for Refusal {
             Refusal::NoRow { backend } => write!(
                 f,
                 "this model has no verified tolerance on the '{backend}' backend, so it is not allowed to answer there; use device='cpu' (or 'auto')"
+            ),
+            Refusal::IntegratedGpu { device } => write!(
+                f,
+                "'{device}' is an integrated GPU: the tolerances of this library were measured on discrete GPUs only, so a model is not allowed to answer on it; use a discrete device or device='cpu'"
             ),
         }
     }
@@ -410,6 +420,12 @@ fn named(
             found: of_backend(devices, backend).map(DeviceInfo::name).collect(),
         });
     };
+    // the rows of a backend are the ones measured on its discrete GPUs
+    if device.kind == DeviceKind::Igpu {
+        return Err(Refusal::IntegratedGpu {
+            device: device.name(),
+        });
+    }
     if !has_row(backend) {
         return Err(Refusal::NoRow { backend });
     }

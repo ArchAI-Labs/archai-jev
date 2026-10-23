@@ -96,29 +96,64 @@ pub fn lookup(
 /// the CPU row (D54), and below the CPU row of 0.1. The
 /// integrated GPU of the same machine (Vulkan, 0.0698) was not admitted to the tolerance, and
 /// Metal was never measured: neither has a row.
-#[allow(unused_variables)]
+type GpuRow = (
+    &'static str,
+    &'static str,
+    Reference,
+    BackendKind,
+    Tolerance,
+);
+
+/// Every GPU row: the one table that `lookup` and `all` both read, so that a row cannot be in one
+/// and not in the other (the test that no GPU row is wider than its CPU row walks `all`).
+fn gpu_rows() -> Vec<GpuRow> {
+    #[allow(unused_mut)] // only the testing build adds another row
+    let mut rows = vec![
+        (
+            "qwen2-keys",
+            "q8_0",
+            Reference::FullPrecision,
+            BackendKind::Cuda,
+            Tolerance {
+                logit: None,
+                p: 0.097,
+            },
+        ),
+        (
+            "qwen2-keys",
+            "q8_0",
+            Reference::FullPrecision,
+            BackendKind::Vulkan,
+            Tolerance {
+                logit: None,
+                p: 0.057,
+            },
+        ),
+    ];
+    #[cfg(feature = "testing")]
+    rows.push((
+        "test-fake",
+        "f32",
+        Reference::FullPrecision,
+        BackendKind::Cuda,
+        Tolerance {
+            logit: Some(5e-4),
+            p: 5e-4,
+        },
+    ));
+    rows
+}
+
 fn gpu_row(
     family: &str,
     dtype: &str,
     reference: Reference,
     backend: BackendKind,
 ) -> Option<Tolerance> {
-    match (family, dtype, reference, backend) {
-        ("qwen2-keys", "q8_0", Reference::FullPrecision, BackendKind::Cuda) => Some(Tolerance {
-            logit: None,
-            p: 0.097,
-        }),
-        ("qwen2-keys", "q8_0", Reference::FullPrecision, BackendKind::Vulkan) => Some(Tolerance {
-            logit: None,
-            p: 0.057,
-        }),
-        #[cfg(feature = "testing")]
-        ("test-fake", "f32", Reference::FullPrecision, BackendKind::Cuda) => Some(Tolerance {
-            logit: Some(5e-4),
-            p: 5e-4,
-        }),
-        _ => None,
-    }
+    gpu_rows()
+        .into_iter()
+        .find(|r| r.0 == family && r.1 == dtype && r.2 == reference && r.3 == backend)
+        .map(|r| r.4)
 }
 
 fn cpu_row(family: &str, dtype: &str, reference: Reference) -> Option<Tolerance> {
@@ -189,32 +224,11 @@ fn cpu_row(family: &str, dtype: &str, reference: Reference) -> Option<Tolerance>
 /// Every `(family, dtype, reference, backend)` that has a tolerance (used by tests that walk the
 /// table).
 pub fn all() -> Vec<(&'static str, &'static str, Reference, BackendKind)> {
-    #[allow(unused_mut)] // only the testing build adds another GPU row
     let mut rows: Vec<_> = cpu_rows()
         .into_iter()
         .map(|(f, d, r)| (f, d, r, BackendKind::Cpu))
         .collect();
-    rows.extend([
-        (
-            "qwen2-keys",
-            "q8_0",
-            Reference::FullPrecision,
-            BackendKind::Cuda,
-        ),
-        (
-            "qwen2-keys",
-            "q8_0",
-            Reference::FullPrecision,
-            BackendKind::Vulkan,
-        ),
-    ]);
-    #[cfg(feature = "testing")]
-    rows.push((
-        "test-fake",
-        "f32",
-        Reference::FullPrecision,
-        BackendKind::Cuda,
-    ));
+    rows.extend(gpu_rows().into_iter().map(|r| (r.0, r.1, r.2, r.3)));
     rows
 }
 

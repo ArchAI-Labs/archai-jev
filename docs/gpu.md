@@ -31,7 +31,7 @@ the valid names. No environment variable selects the device.
 | You ask for | What happens |
 |---|---|
 | `"cpu"` | The processor, always. |
-| `"cuda:0"` (or another named device) | That device, or an error: `DeviceUnavailableError` if the build lacks the backend or the machine lacks the device, or if the model has no verified tolerance on that backend (see below). Never a silent change of device. |
+| `"cuda:0"` (or another named device) | That device, or an error: `DeviceUnavailableError` if the build lacks the backend or the machine lacks the device, or if the model has no verified tolerance on that backend (see below), or if the device is an integrated GPU (the tolerances were measured on discrete GPUs). Never a silent change of device. |
 | `"auto"` | The first of CUDA, Metal, Vulkan that exists and is allowed to answer for this model; integrated Vulkan GPUs are skipped. If none is usable, the CPU. A `DeviceFallbackWarning` is raised **only** when a GPU backend is compiled in and could not be used (a missing driver, not enough memory); a CPU wheel says nothing, because there was nothing to fall back from. |
 
 `Jev.model_info.device` always says where the model runs.
