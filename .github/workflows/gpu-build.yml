@@ -12,25 +12,11 @@
 # the named device where there is one. The toolkit installation steps cannot be tried locally; read the first run.
 name: GPU build
 
+# By hand only (Actions -> "GPU build" -> Run workflow). It used to run on every push to main and develop, on tags and
+# weekly; several jobs were still red (CUDA, Vulkan on Windows) and a red check on a tag next to a release is noise. The
+# release of CI.yml does not depend on this workflow.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 3 * * 1"
-  push:
-    branches:
-      - main
-      - develop
-    # Path filters do not apply to tags: a tag always builds.
-    paths:
-      - "Cargo.toml"
-      - "build.rs"
-      - "src/engine/**"
-      - ".cargo/**"
-      - "ci/**"
-      - "tests/gpu_smoke.rs"
-      - ".github/workflows/gpu-build.yml"
-    tags:
-      - "v*"
 
 permissions:
   contents: read
