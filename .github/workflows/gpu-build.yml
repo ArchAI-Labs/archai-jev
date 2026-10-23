@@ -232,7 +232,12 @@ jobs:
           ) | Out-File -Append $env:GITHUB_STEP_SUMMARY
       - name: Device tests of the Python layer
         if: matrix.feature == 'cuda-no-vmm'
-        run: uv run --no-sync pytest -ra --tb=short -p no:cacheprovider -k device
+        # Python on Windows does not search PATH for DLLs: the folder of the runtime DLLs is given to it by hand
+        # (the extension would not import and pytest would stop at the collection of every file).
+        run: >-
+          uv run --no-sync python -c "import os, sys, pytest;
+          os.add_dll_directory(os.path.join(os.environ['CUDA_PATH'], 'bin'));
+          sys.exit(pytest.main(['-ra', '--tb=short', '-p', 'no:cacheprovider', '-k', 'device']))"
 
   # ---- Vulkan on Linux: compile, import, and the CPU plan in a build with the Vulkan loader but no usable GPU ---------
   vulkan-linux:
@@ -349,7 +354,12 @@ jobs:
       - name: Import and the paths without a GPU
         run: uv run --no-sync python ci/gpu/smoke_devices.py --expect cpu,vulkan --no-gpu --dll-dir "$VULKAN_SDK/Bin"
       - name: Device tests of the Python layer
-        run: uv run --no-sync pytest -ra --tb=short -p no:cacheprovider -k device
+        # Python on Windows does not search PATH for DLLs: the folder of the runtime DLLs is given to it by hand
+        # (the extension would not import and pytest would stop at the collection of every file).
+        run: >-
+          uv run --no-sync python -c "import os, sys, pytest;
+          os.add_dll_directory(os.path.join(os.environ['VULKAN_SDK'], 'Bin'));
+          sys.exit(pytest.main(['-ra', '--tb=short', '-p', 'no:cacheprovider', '-k', 'device']))"
 
   # ---- Metal on macOS arm64: compile, and the CPU path of a Metal build on a VM with no usable GPU (AC-13) ---------
   metal-macos:
