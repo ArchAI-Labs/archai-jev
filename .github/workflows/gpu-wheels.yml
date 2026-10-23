@@ -13,6 +13,12 @@ name: GPU wheels
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the wheels to PyPI (project archai-jev-vulkan) after the smoke tests pass. Leave off to only build."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -125,3 +131,90 @@ jobs:
         with:
           name: wheels-vulkan-linux-x86_64
           path: dist
+
+  # ---- GP6: install the wheel in a clean environment and use it with no GPU ----------------------------------------
+  smoke-windows:
+    name: smoke-windows (py${{ matrix.python }})
+    needs: windows
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: wheels-vulkan-windows-x64
+          path: dist
+      - uses: astral-sh/setup-uv@v7
+      - name: Does this runner have the Vulkan loader? (recorded, not required)
+        shell: pwsh
+        run: |
+          "vulkan-1.dll in System32: $(Test-Path "$env:SystemRoot\System32\vulkan-1.dll")" | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+      - name: Install in a clean environment and use it
+        shell: bash
+        run: |
+          uv venv --python "${{ matrix.python }}" .smoke
+          uv pip install --python .smoke/Scripts/python.exe dist/*.whl
+          .smoke/Scripts/python.exe ci/gpu/smoke_devices.py --expect cpu,vulkan --no-gpu
+
+  smoke-linux:
+    name: smoke-linux (py${{ matrix.python }})
+    needs: linux
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: wheels-vulkan-linux-x86_64
+          path: dist
+      - uses: astral-sh/setup-uv@v7
+      - name: Install in a clean environment and use it
+        run: |
+          uv venv --python "${{ matrix.python }}" .smoke
+          uv pip install --python .smoke/bin/python dist/*.whl
+          .smoke/bin/python ci/gpu/smoke_devices.py --expect cpu,vulkan --no-gpu
+
+  # A machine with no Vulkan loader at all (a slim container): does `import archai_jev` survive, and does
+  # `device="cpu"` answer? If the import fails here the wheel cannot be offered to everyone as a replacement of the CPU wheel.
+  smoke-linux-bare:
+    name: smoke-linux-bare (no libvulkan)
+    needs: linux
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: wheels-vulkan-linux-x86_64
+          path: dist
+      - name: Install and use it in python:3.12-slim
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w python:3.12-slim sh -c '
+            ls /usr/lib/x86_64-linux-gnu/libvulkan* 2>/dev/null || echo "no libvulkan in this image"
+            pip install --quiet dist/*.whl
+            python ci/gpu/smoke_devices.py --expect cpu,vulkan --no-gpu'
+
+  publish:
+    name: Publish to PyPI
+    if: ${{ inputs.publish }}
+    needs: [windows, linux, smoke-windows, smoke-linux, smoke-linux-bare]
+    runs-on: ubuntu-latest
+    environment: pypi-vulkan
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v7
+      - name: Generate artifact attestation
+        uses: actions/attest@v4
+        with:
+          subject-path: 'wheels-*/*'
+      - uses: astral-sh/setup-uv@v7
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always 'wheels-*/*'

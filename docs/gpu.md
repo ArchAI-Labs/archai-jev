@@ -118,6 +118,23 @@ On the machine we measured, the default model took about 2.0 GiB of the memory o
 peak. A build with CUDA also creates the CUDA context when you ask for `device="cpu"`: about 126 MiB
 of GPU memory (13 MiB with Vulkan), which does not grow, and nothing runs there.
 
+## The Vulkan wheel
+
+For Vulkan there is a ready-made wheel, **`archai-jev-vulkan`** (Windows x64 and Linux x86_64; about
+18 MB, no extra Python dependency). It is the same module as the CPU wheel under another project
+name, so it **replaces** `archai-jev`: uninstall one before installing the other.
+
+```text
+pip uninstall archai-jev
+pip install archai-jev-vulkan
+```
+
+It needs the Vulkan loader of the system (`vulkan-1.dll` on Windows, `libvulkan.so.1` on Linux), which
+comes with the driver of any GPU. On a machine without a GPU or without the loader, use the CPU wheel:
+the Vulkan wheel is checked to import and to answer with `device="cpu"` where the loader is present
+but there is no GPU; where the loader itself is missing, `import` may fail. There is no CUDA wheel: for
+CUDA, build from source (below).
+
 ## Building from source
 
 You need what the CPU build needs (a C++ compiler, CMake and `libclang` for `bindgen`), plus the SDK of the backend. The Cargo features only forward to the
