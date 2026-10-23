@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Jev.model_info.device` says where the model runs. New exceptions: `DeviceUnavailableError` (a named
   device the build or the machine lacks) and `DeviceFallbackWarning` (`device="auto"` used the CPU
   although a GPU backend is compiled in and could not be used; never emitted by a CPU wheel).
+- **`docs/gpu.md`**: how to choose a device, what happens when it is missing, what a GPU did on the
+  one machine we measured (tables generated from the archived report), and how to build for CUDA,
+  Vulkan and Metal from source.
 - **The default model is verified on CUDA and Vulkan** (builds from source with the `cuda` or `vulkan`
   Cargo feature; the wheels on PyPI stay CPU-only). `device="cuda:0"` or `"vulkan:1"` runs the
   self-check of the default model (Q8_0) against tolerances of 0.097 (CUDA) and 0.057 (Vulkan) in

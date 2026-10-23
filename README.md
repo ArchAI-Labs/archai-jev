@@ -228,7 +228,9 @@ returns the error of a failed state in its place instead of losing the rest.
 
 ## Known limits of 0.1.0
 
-- CPU only; no GPU.
+- The wheels are CPU-only. A GPU (CUDA or Vulkan, for the default model) works in a build from the
+  source with a Cargo feature, and `device="cpu"` stays the default; see [docs/gpu.md](docs/gpu.md).
+  Metal is built but has never been run on a Mac, so no model is allowed to use it.
 - One model ships (the default above). Kev checkpoints and models of your own with a "pointer" head
   are not loadable yet; the engine and the head are implemented and tested, the file reader is not.
 - One request at a time per `Jev` (calls from several threads wait their turn).

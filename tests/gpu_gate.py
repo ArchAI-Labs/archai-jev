@@ -327,6 +327,53 @@ def evaluate_gate(report: dict[str, Any], backend: str) -> GateResult:
     return GateResult(backend=backend, checks=checks)
 
 
+def _ms(cell: dict[str, Any]) -> str:
+    return f"{cell['p50_ms']:.0f} ms ({cell['ratio_to_tuned_cpu']:.2f}x)"
+
+
+def render_table(report: dict[str, Any]) -> str:
+    """The tables of ``docs/gpu.md``, generated from the archived report (never written by hand).
+
+    One table per regime (calls back to back, 0.5 s of pause between calls), a column per workload
+    (p50 of the device and its ratio to the best setting of the CPU in the same blocks), plus the
+    fidelity and the calibration that decide whether the backend has tolerance rows.
+    """
+    backends: dict[str, Any] = report["backends"]
+    cpu_ece = report["cpu"]["calibration"]["overall"]["ece"]
+    out: list[str] = []
+    for regime, title in (
+        ("consecutive", "Calls back to back"),
+        ("pause05", "A pause of 0.5 s between calls"),
+    ):
+        out += [
+            f"**{title}** (p50 of the device, ratio to the tuned CPU in brackets; below 1 is faster)",
+            "",
+            "| Device | Kind | W1 (94 tokens) | W3 (365 tokens) | Q10 (10 questions, 1537 tokens) |",
+            "|---|---|---|---|---|",
+        ]
+        for name, b in backends.items():
+            lat = b["latency"][regime]
+            out.append(
+                f"| `{name}` {b['device']} | {b['device_type']} | {_ms(lat['W1'])} | {_ms(lat['W3'])} | {_ms(lat['Q10'])} |"
+            )
+        out.append("")
+    out += [
+        "**Fidelity and calibration** (default model, fp32 reference; ECE of the CPU: "
+        f"{cpu_ece:.4f})",
+        "",
+        "| Device | Largest abs. difference in probability | ECE | Tolerance row |",
+        "|---|---|---|---|",
+    ]
+    for name, b in backends.items():
+        dp = max(b["fidelity"][k]["max_dp"] for k in b["fidelity"])
+        ece = b.get("calibration", {}).get("overall", {}).get("ece")
+        rows = "yes" if evaluate_gate(report, name).tolerance_rows else "no"
+        out.append(
+            f"| `{name}` | {dp:.3f} | {'not measured' if ece is None else f'{ece:.4f}'} | {rows} |"
+        )
+    return "\n".join(out) + "\n"
+
+
 def main(argv: list[str]) -> int:
     path = (
         Path(argv[1])
