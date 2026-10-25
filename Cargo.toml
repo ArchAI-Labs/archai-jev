@@ -1,6 +1,6 @@
 [package]
 name = "archai_jev"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "High-performance Rust runtime for System One decision models (typed answers with calibrated probabilities)."
 license = "Apache-2.0"

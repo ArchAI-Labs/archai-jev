@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-23
+
 ### Added
+- **Performance section in the README**, with the numbers of the 0.2.0 release bench (one machine, alternating
+  blocks, A/A control) and the scripts to reproduce them (`scripts/bench_release/`). On CPU, against Kev on PyTorch
+  (same checkpoint and inputs), a request costs 1.55 times as much in bf16 and the capacity with several callers is
+  3.3 times lower; start is 2.1 times faster and memory 2.2 times lower. Ten questions about one state are about
+  3.2 times faster than in 0.1.0.
 - **Devices from Python.** `archai_jev.available_devices()` lists the devices this process can run a
   model on (`DeviceInfo`: `name` such as `"cpu"` or `"cuda:0"`, `kind`, `backend`, `description`, memory;
   frozen, hashable, picklable) and `archai_jev.compiled_backends()` the backends the build contains:
@@ -140,7 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verified originals.
 - `demos/`: runnable, heavily commented scripts that need only the standard library and
   `archai_jev` (they are not part of the wheel). `000_truth_invaders.py` is a retro arcade game
-  played by the model; `001` to `007` teach one concept each: the four tasks and typed answers,
+  played by the model; `001` to `007` teach one concept each: `Choice` and `YesNo` with typed answers,
   a grounding check, a duplicate finder, every error the library raises on purpose, calibration
   and `temperature=`, async (`aask_many`), and testing your own code with `MockScorer`.
 - **Reuse of what questions share.** The fixed block of a task and, when the template puts it

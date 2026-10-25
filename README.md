@@ -17,10 +17,11 @@ probabilities, checks) runs in Rust and C++ (llama.cpp); you install a wheel and
 
 ![logo](https://github.com/ArchAI-Labs/archai-jev/blob/main/logo.jpg?raw=true)
 
-> **Status: 0.1.0, a first release.** It runs on the CPU and ships with **one small general model**
-> that answers any `Choice` or `YesNo` question, reliably on the kinds of task it was trained on
-> (see [The default model](#the-default-model)). Running other checkpoints (for example Kev) is
-> planned.
+> **Status: 0.2.0.** It runs on the CPU and ships with **one small general model** that answers any
+> `Choice` or `YesNo` question, reliably on the kinds of task it was trained on (see
+> [The default model](#the-default-model)). Kev-0.8B loads from its original public files
+> ([docs/model-files.md](docs/model-files.md)). Speed and memory are in [Performance](#performance),
+> including where we are slower than Kev on PyTorch.
 
 ## Install
 
@@ -226,18 +227,116 @@ variant we measured is not among them, are in [docs/quantization.md](docs/quanti
 stops its work (see [docs/concurrency.md](docs/concurrency.md)); `ask_many(..., return_exceptions=True)`
 returns the error of a failed state in its place instead of losing the rest.
 
-## Known limits of 0.1.0
+## Performance
+
+All numbers below were measured by us on **one machine**, with the scripts in
+[`scripts/bench_release/`](scripts/bench_release/); they are not reproduced on a second one yet. Treat them
+as an order of magnitude, not a guarantee. Where we lose, the table says so.
+
+**Machine**: Intel Core Ultra 7 255HX (8 performance + 12 efficiency cores, 20 threads), 32 GB RAM, Windows 11
+Pro, "Best performance" power mode on AC, 2026-10-23 (Kev run) and 2026-10-25 (default-model run). **Versions**: archai_jev 0.2.0 (release wheel, CPU) and
+archai_jev 0.1.0 (the wheel built for 0.1.0), Python 3.13; Kev on PyTorch 2.8.0 (CPU), transformers 5.17.0,
+Python 3.12, fp32, Kev's own default loading.
+
+**Method** (the same for every row):
+- One process per contender, one model per process, **alternating blocks**: in each of 3 blocks every contender
+  runs once, in the opposite order in odd blocks, so a slow minute of the machine hits all of them. A twin of the
+  reference (same configuration, run twice, "A/A") must give a ratio between 0.95 and 1.05; a cell where it does
+  not is marked with `†` and is not used for any ratio.
+- Latency is `Jev.ask` (or Kev's library path) called from Python, so it **includes the Python-Rust boundary** and the
+  tokenization. Every request has a different state (no result is ever reused). Figures are `p50 / p95` in
+  milliseconds, the median over the 3 blocks of each block's value, and `[min-max]` is the spread of the block
+  medians. "Apart" means a pause of 0.5 s before each call: the CPU clock drops while idle, and the same request
+  then costs more on this laptop.
+- Capacity is requests per second with 1, 4 and 16 caller threads sharing one model.
+- Memory is the peak working set of the process over the whole run (including the 16-caller series).
+- The default-model run was done twice: the first time with Firefox open (10-20% of the CPU), the second with it closed;
+  the tables show the second, and the text says where the first one differs. The Kev run had a quiet machine.
+
+### Default model (`nickprock/archai-jev-qwen-1.5b`, Q8_0), 0.2.0 against 0.1.0
+
+0.1.0 shipped a different, older default model (four fixed tasks, a shorter prompt), so this compares the
+two releases as a user gets them, not the engine alone. Requests: a 94-token request with one `Choice` (W1),
+112 tokens (W2), 365 tokens (W3), and ten `YesNo` questions about one state, 1,537 tokens in all (Q10).
+
+| Request | 0.2.0 back to back | 0.2.0 apart (0.5 s) | 0.2.0 apart (1.5 s) | 0.1.0 back to back / apart 0.5 s / apart 1.5 s (p50) |
+|---|---|---|---|---|
+| W1, 94 tokens | 290 / 331 [266-432] ms | 422 / 516 [411-577] ms † | 494 / 524 [472-588] ms | 224 / 380 / 434 ms |
+| W2, 112 tokens | 338 / 408 [332-438] ms | 466 / 484 [451-517] ms | 548 / 642 [534-563] ms | 279 / 425 / 481 ms |
+| W3, 365 tokens | 1141 / 1200 [1101-1223] ms | 1178 / 1310 [1173-1297] ms † | 1361 / 1480 [1298-1411] ms | 1041 / 1046 / 1232 ms |
+| Q10, ten questions | 1684 / 1746 [1605-1694] ms | 1897 / 1920 [1728-1946] ms † | 2046 / 3076 [1813-2570] ms † | 5191 / 5390 / 5624 ms |
+
+- A request is **slower in 0.2.0**: where the A/A check held, 0.1.0 needs 0.82 to 0.93 of the time (W1, W2 and W3). The
+  new prompt is longer and the model is different. Ten questions about one state are **about 3.2 times faster** in 0.2.0
+  (3.2 in this run and 3.1 and 3.3 in the first, the cells where the check held), because what the questions share is
+  computed once ([docs/prefix-cache.md](docs/prefix-cache.md)).
+- Capacity (requests per second on W1; one `Jev` serves one request at a time): 0.2.0 2.91 / 3.30 / 3.11 for 1 / 4 / 16
+  callers, 0.1.0 3.83 / 3.90 / 3.93. In the first run the two were equal (2.95 / 2.91 / 3.23 against 2.79 / 2.99 / 2.89), and the
+  spread between blocks (2.3 to 4.0) is as large as the difference: do not read a gap into it.
+- Start: process start to first answer 1.43 s (import 0.23 s, load 0.38 s, first call 0.71 s) against 1.24 s for 0.1.0.
+  Peak memory 1.91 GiB against 1.76 GiB. Wheel 4.5 MiB against 4.1 MiB; the model file is 1.57 GiB.
+- Eight threads instead of the 20 of the default (`ARCHAI_JEV_NUM_THREADS=8`) took 0.65 of the time on W1 with a
+  1.5 s pause and 1.21 times the time on W3 back to back (cells where the A/A check held). On other CPUs the best
+  number differs.
+- The two runs agree on the ratios; in absolute terms the second is about 10% faster than the first.
+
+### Kev-0.8B, archai_jev against Kev on PyTorch (CPU)
+
+The same checkpoint (`jaredpalmer/kev-0.8b`), the same inputs and the same three questions (one `Choice`, one `YesNo`,
+one `Score`) on a 300-token state, 402 tokens in all: 50 requests back to back and 20 apart. Kev is measured with its
+default threads and tuned (`kev 8 threads`: 8 intra-op threads for one caller, 5 for 4 callers, 1 for 16, the best
+values of our earlier sweep). The comparison that counts is against the tuned one.
+
+| | back to back | apart (0.5 s) | capacity 1 / 4 / 16 callers | start to first answer | peak memory |
+|---|---|---|---|---|---|
+| kev default (fp32, 20 threads) | 986 / 1035 [981-1442] ms | 1457 / 1501 ms | 1.05 / 1.75 / 1.47 req/s | 6.9 s | 6.4 GiB |
+| kev 8 threads (fp32) | 1081 / 1107 ms | 1106 / 1127 ms | 0.97 / 1.95 / 1.82 req/s | 6.3 s | 6.1 GiB |
+| archai_jev bf16 (Kev's default variant) | 1670 / 1734 ms | 1697 / 2105 ms | 0.58 / 0.59 / 0.59 req/s | 3.0 s | 2.8 GiB |
+| archai_jev f32 | 1571 / 2057 ms | 1591 / 2071 ms | 0.58 / 0.62 / 0.62 req/s | 3.4 s | 4.2 GiB |
+| archai_jev bf16, 8 threads | 2277 / 2308 ms | 2258 / 2291 ms | 0.44 / 0.44 / 0.44 req/s | 3.6 s | 2.8 GiB |
+
+- **We are slower on CPU.** Against tuned Kev, one request costs 1.55 times as much in bf16 and 1.45 times in f32
+  (blocks 1.52 to 1.55 and 1.43 to 1.46; the A/A twin agrees within 1%). Capacity is 3.3 times lower with four callers
+  (0.59 against 1.95 req/s): one `Jev` serves one request at a time, while Kev's library can run several on separate
+  threads. With its default threads Kev showed one slower block (981 to 1442 ms): that spread is real.
+- **We start faster and use less memory**: 2.1 times faster to the first answer and 2.2 times less memory in bf16
+  (1.4 times in f32; Kev holds fp32 weights plus PyTorch). No PyTorch is needed.
+- Disk: the wheel is 4.5 MiB plus the converted model (1.45 GiB in bf16, kept in the cache next to the 1.7 GiB of original
+  files); a clean Kev environment on Windows was 1.61 GiB plus 1.71 GiB of weights when we measured it earlier in
+  development (not measured again on 2026-10-23).
+- Same answers: against Kev on PyTorch the largest probability difference on five requests is 0.0059 in bf16 and
+  0.0012 in f32 (Kev against itself, 9e-7).
+- GPU: the wheels are CPU-only and we did not measure a 0.2.0 GPU build for this table; what a CUDA and a Vulkan
+  build did for the default model is in [docs/gpu.md](docs/gpu.md).
+
+### Reproduce
+
+```powershell
+# default model: unpack the 0.2.0 and the 0.1.0 wheel (rename to .zip), edit the paths in contenders_default.json, then
+scripts\bench_release\run_blocks.ps1 -Contenders scripts\bench_release\contenders_default.json -Blocks 3 -Out out\default
+python scripts\bench_release\summarize.py default out\default --reference r020 --twin r020-aa
+
+# Kev: KEV_SRC = a checkout of Kev, KEV_PYTHON = the python.exe of an environment with torch, transformers, peft
+python scripts\bench_release\kev\make_inputs.py scripts\bench_release\kev\inputs.json
+scripts\bench_release\kev\run_kev_blocks.ps1 -Blocks 3 -Out out\kev
+python scripts\bench_release\summarize.py kev out\kev --reference kev-t8
+```
+
+The runners refuse to start unless the machine is on AC power in the best performance mode, and wait for a quiet
+CPU before every process. In the "Balanced" mode the same request can cost twice as much.
+
+## Known limits of 0.2.0
 
 - The wheels are CPU-only. A GPU (CUDA or Vulkan, for the default model) works in a build from the
   source with a Cargo feature, and `device="cpu"` stays the default; see [docs/gpu.md](docs/gpu.md).
   Metal is built but has never been run on a Mac, so no model is allowed to use it.
-- One model ships (the default above). Kev checkpoints and models of your own with a "pointer" head
-  are not loadable yet; the engine and the head are implemented and tested, the file reader is not.
+- The registry has the default model and Kev-0.8B; models of your own go through a manifest.
 - One request at a time per `Jev` (calls from several threads wait their turn).
 - `jev.evaluate`, `jev.calibrate` and `compare` measure a model on **your** labelled data; the
   declared calibration of the default model holds on the tasks it was trained on, not on yours.
-- **No performance claims are made.** Speed and memory were measured on a single machine during
-  development and will be published once they are reproduced on a second one.
+- Kev needs several GB of free virtual memory (the Windows commit charge) on top of its weights, because each request
+  creates a context sized for its 8,205-token limit. With less than about 5 GB free the process can stop with a
+  `GGML_ASSERT` message instead of a Python error. The default model is not affected.
 
 ## Demos
 
