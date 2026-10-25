@@ -327,10 +327,11 @@ CPU before every process. In the "Balanced" mode the same request can cost twice
 
 ## Known limits of 0.2.0
 
-- The wheels are CPU-only. A GPU (CUDA or Vulkan, for the default model) works in a build from the
-  source with a Cargo feature, and `device="cpu"` stays the default; see [docs/gpu.md](docs/gpu.md).
+- The wheels are CPU-only. A GPU (CUDA or Vulkan, for models of the `qwen2-keys` family with Q8_0
+  weights whose own self-check passes) works in a build from the source with a Cargo feature, and
+  `device="cpu"` stays the default; see [docs/gpu.md](docs/gpu.md).
   Metal is built but has never been run on a Mac, so no model is allowed to use it.
-- The registry has the default model and Kev-0.8B; models of your own go through a manifest.
+- The registry has the default model, Kev-0.8B and a Snake and maze specialist (demo `010`); models of your own go through a manifest.
 - One request at a time per `Jev` (calls from several threads wait their turn).
 - `jev.evaluate`, `jev.calibrate` and `compare` measure a model on **your** labelled data; the
   declared calibration of the default model holds on the tasks it was trained on, not on yours.
@@ -356,6 +357,7 @@ HUD shows the measured latency, decisions per second and accuracy live on your m
 ```bash
 python demos/000_truth_invaders.py                # play (SPACE starts, ESC quits)
 python demos/000_truth_invaders.py --headless     # no window: accuracy and latency on all claims
+python demos/000_truth_invaders.py --device cuda:0   # on a GPU (needs a GPU build, see below)
 ```
 
 It uses only the standard library (`tkinter`) and `archai_jev`. The model can be wrong, and the
@@ -377,6 +379,41 @@ the standard library and `archai_jev`, and print what they measure on your machi
 | `007_test_without_the_model.py` | `MockScorer` and `Fault`: test your own code without downloading the model |
 
 `004` (first two parts) and `007` run without the model; the others download it on the first run.
+
+### `009_run_on_a_gpu.py`: choose the device
+
+Lists the backends your build has and the devices of your machine, loads the model with
+`device="auto"` (or the one you name), says where it runs, and times a call. The wheels on PyPI are
+CPU-only: a GPU needs a build from source (see [`docs/gpu.md`](docs/gpu.md)); with a CPU wheel the
+script says so and uses the CPU.
+
+```bash
+python demos/009_run_on_a_gpu.py                   # the best GPU, else the CPU
+python demos/009_run_on_a_gpu.py --device cuda:0   # insist on this device, or fail
+python demos/009_run_on_a_gpu.py --compare         # also time the CPU
+```
+
+### `010_pellet_maze.py`: a maze game played by a small specialist model
+
+A maze with pellets and ghosts. At every crossing the model chooses where to go and the game plays
+that move, with no safety net. **The game computes the sensors** (what is in the next cell, how far
+the ghosts and the pellets are) and the model only picks the move: it does not read the board, and it
+plays like the fixed policy it was trained to imitate, not better. The screen shows the probability
+of every move, the decisions per second measured live on your machine, and how many times that policy
+would have chosen another move.
+
+```bash
+python demos/010_pellet_maze.py                    # play; the first run downloads ~1.6 GB
+python demos/010_pellet_maze.py --device cuda:0    # on a GPU (a build with CUDA, see docs/gpu.md)
+python demos/010_pellet_maze.py --oracle           # the policy plays: the ceiling of the model
+python demos/010_pellet_maze.py --headless         # no window: whole games, numbers on the console
+```
+
+It uses the model [`nickprock/archai-jev-games-1.5b-v2`](https://huggingface.co/nickprock/archai-jev-games-1.5b-v2)
+(Qwen2.5-1.5B fine-tuned on synthetic data, Apache-2.0), which is in the registry of the library. It is not a
+general model: it is meant for this game format only (the library refuses more than 4 options or `Score`
+questions, but cannot tell you that a question is outside what the model learned). The game code in
+`demos/_games.py` is the file the model was trained with but for one word of a docstring, and a test pins its content. It is a demo of fast typed decisions, not of spatial reasoning.
 
 ## Licenses
 

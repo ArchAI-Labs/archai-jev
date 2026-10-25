@@ -38,14 +38,19 @@ the valid names. No environment variable selects the device.
 
 ### Which models may run on a GPU
 
-A model may answer on a backend only if the library holds a **tolerance row** for that model and
-that backend. The self-check at load time (the same one the CPU does) then compares the numbers of
-the device with the reference. Today the rows are:
+A model may answer on a backend only if the library holds a **tolerance row** for its **family and
+precision** on that backend. The row belongs to the family (`qwen2-keys`, Q8_0), not to one
+checkpoint: any model of that family and precision may run on that backend, **provided its own
+self-check passes** at load time (the same one the CPU does, which compares the numbers of the
+device with the reference vectors of that model). Today the rows are:
 
-- the default model (`qwen2-keys`, Q8_0) on **CUDA** (tolerance 0.097 in probability) and on
-  **Vulkan** (0.057), both below the CPU row (0.1).
+- `qwen2-keys` with Q8_0 weights on **CUDA** (tolerance 0.097 in probability) and on **Vulkan**
+  (0.057), both below the CPU row (0.1). The numbers in this page were measured on the default
+  model; a model of your own in the same family loaded on CUDA in our tests (a Snake and maze
+  specialist, 24 reference vectors, CUDA on the machine below), but its fidelity on other hardware
+  is yours to check with its self-check.
 
-Every other model, every other precision, and Metal have **no row**, so `device="cuda"`,
+Every other family, every other precision, and Metal have **no row**, so `device="cuda"`,
 `"vulkan"` or `"metal"` raises `DeviceUnavailableError` for them, and `"auto"` uses the CPU (with the
 warning above if a GPU backend is compiled in). A row is added only after the fidelity and the
 calibration of that backend were measured. If a GPU gives numbers outside the tolerance the load

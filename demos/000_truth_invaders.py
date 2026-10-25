@@ -41,7 +41,9 @@ Run it
 
 Other options: ``--speed 1.5`` (harder), ``--seed N``, ``--max-seconds N`` (quit by
 itself), ``--threads N`` (CPU threads for the model: by default the game leaves a few
-cores to the window, see ``configure_threads``).
+cores to the window, see ``configure_threads``), ``--device cuda:0`` (run the model on a
+GPU: only in a build of the library made with a GPU backend, see ``demos/009`` and
+``docs/gpu.md``; the default is ``cpu``).
 Keys: SPACE = start / play again, ESC = quit.
 """
 
@@ -64,7 +66,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from archai_jev import Jev, YesNo
+# A build of the library with CUDA needs the folder of the CUDA runtime added by hand on
+# Windows (Python does not search PATH for DLLs), BEFORE the import: see docs/gpu.md.
+if hasattr(os, "add_dll_directory") and os.environ.get("CUDA_PATH"):
+    _cuda_bin = os.path.join(os.environ["CUDA_PATH"], "bin")
+    if os.path.isdir(_cuda_bin):
+        os.add_dll_directory(_cuda_bin)
+
+from archai_jev import Jev, YesNo  # noqa: E402
 
 try:  # tkinter ships with Python, but some Linux distros package it separately.
     import tkinter as tk
@@ -371,13 +380,14 @@ class Judge:
 # ======================================================================================
 # 4. HEADLESS MODE: measure the model on every claim, without a window
 # ======================================================================================
-def run_headless(seed: int, args_threads: int | None) -> int:
+def run_headless(seed: int, args_threads: int | None, device: str) -> int:
     """Ask every claim once and print accuracy and latency. No window, no game."""
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
     configure_threads(args_threads, reserve_for_ui=False)
     print("Loading the model (the first run downloads it)...")
-    jev = Jev.from_pretrained()
-    print(f"Model: {jev.model_info.name} ({jev.model_info.dtype})")
+    jev = Jev.from_pretrained(device=device)
+    info = jev.model_info
+    print(f"Model: {info.name} ({info.dtype}) on {info.device}")
 
     claims = [c for b in BRIEFINGS for c in b.claims()]
     random.Random(seed).shuffle(claims)
@@ -706,7 +716,7 @@ class Game:
 
         def load() -> None:
             try:
-                jev = Jev.from_pretrained()
+                jev = Jev.from_pretrained(device=self.args.device)
                 # The very first call is slower than the others (caches and threads are
                 # cold), so we make it here, before the game starts, with a throwaway
                 # question. Otherwise the first decision of every game looks slow.
@@ -774,11 +784,11 @@ class Game:
         self._build_base()
 
         # Bottom credit and the big banner used between waves.
-        Label(
+        self.credit = Label(
             c,
             W // 2,
             706,
-            "archai-jev  |  Rust + llama.cpp  |  running locally on your CPU",
+            "archai-jev  |  Rust + llama.cpp  |  running locally",
             9,
             DIM,
             "center",
@@ -987,6 +997,10 @@ class Game:
             self.mode = "error"
             self._show_error(self.load_error)
         elif self.jev is not None:
+            self.credit.set(
+                "archai-jev  |  Rust + llama.cpp  |  running locally on "
+                f"{self.jev.model_info.device}"
+            )
             self.judge = Judge(self.jev)
             self.mode = "title"
             self._build_title_screen()
@@ -1453,6 +1467,12 @@ def main() -> int:
         help="CPU threads for the model (default: all cores but a few for the window)",
     )
     parser.add_argument(
+        "--device",
+        default="cpu",
+        help="where the model runs: cpu (default), auto, cuda:0, vulkan:1... A GPU needs a "
+        "build of the library with that backend (see demos/009_run_on_a_gpu.py)",
+    )
+    parser.add_argument(
         "--max-seconds",
         type=float,
         default=0.0,
@@ -1466,7 +1486,7 @@ def main() -> int:
     if not 5 <= args.fps <= 240:
         parser.error("--fps must be between 5 and 240")
     if args.headless:
-        return run_headless(args.seed, args.threads)
+        return run_headless(args.seed, args.threads, args.device)
     Game(args).run()
     return 0
 

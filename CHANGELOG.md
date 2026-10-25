@@ -7,9 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
 ## [0.2.0] - 2026-10-23
 
 ### Added
+- **A specialist model of a game in the registry**: `nickprock/archai-jev-games-1.5b-v2` (revision `04be1d56`,
+  Qwen2.5-1.5B fine-tuned on synthetic data, family `qwen2-keys`, Q8_0, Apache-2.0), loaded with
+  `Jev.from_pretrained("nickprock/archai-jev-games-1.5b-v2")`. It is **not** the default and it only answers
+  `Choice` questions in the format of the game (2 to 4 options named `up`, `down`, `left` or `right`). Its
+  calibration is declared as 1.0 (a fitted temperature made the ECE worse). One self-check vector, the one for
+  yes/no questions that the family requires, was recorded from the engine itself and is not an independent
+  reference; the notice says so. It runs on CUDA like any `qwen2-keys` Q8_0 model whose self-check passes.
+- **Demos**: `demos/009_run_on_a_gpu.py` (choose and verify the device) and `demos/010_pellet_maze.py`
+  (a maze game where the game computes the sensors and the model picks the move; `demos/_games.py` is the file the
+  model was trained with, a test pins its content: it is the trained file but for one word of a docstring). `demos/000_truth_invaders.py` takes `--device`.
 - **Performance section in the README**, with the numbers of the 0.2.0 release bench (one machine, alternating
   blocks, A/A control) and the scripts to reproduce them (`scripts/bench_release/`). On CPU, against Kev on PyTorch
   (same checkpoint and inputs), a request costs 1.55 times as much in bf16 and the capacity with several callers is
@@ -28,7 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The default model is verified on CUDA and Vulkan** (builds from source with the `cuda` or `vulkan`
   Cargo feature; the wheels on PyPI stay CPU-only). `device="cuda:0"` or `"vulkan:1"` runs the
   self-check of the default model (Q8_0) against tolerances of 0.097 (CUDA) and 0.057 (Vulkan) in
-  probability, both below the CPU one (0.1). Any other model or precision has no row on a GPU and is
+  probability, both below the CPU one (0.1). The row belongs to the family and the precision
+  (`qwen2-keys`, Q8_0), not to one checkpoint: another model of that family may run on those backends
+  if its own self-check passes. Any other family or precision has no row on a GPU and is
   refused there with `DeviceUnavailableError`; so is Metal, which was never measured, and so is an
   integrated GPU named explicitly (the tolerances were measured on discrete GPUs).
 - **A family of general models that answer with the letter of an option** (`spark2_5-letters`, head

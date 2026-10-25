@@ -17,6 +17,7 @@ const BUILTIN_MANIFESTS: &[&str] = &[
     include_str!("registry/nickprock__archai-jev-qwen-1.5b.json"),
     include_str!("registry/nickprock__archai-jev-qwen-1.5b@7730248d.json"),
     include_str!("registry/jaredpalmer__kev-0.8b.json"),
+    include_str!("registry/nickprock__archai-jev-games-1.5b-v2.json"),
 ];
 /// Which entry is the default and which revision of each name is current.
 const BUILTIN_INDEX: &str = include_str!("registry/index.json");
@@ -468,6 +469,56 @@ mod tests {
             "5dfad79eba479688fbd4bc5b43dd8279aeb5a49259f73a0a3f330b38790aa809"
         );
         assert_eq!(file.size, 1_646_572_736);
+    }
+
+    #[test]
+    fn the_games_model_is_an_entry_of_the_registry_that_is_not_the_default() {
+        let reg = Registry::builtin().unwrap();
+        let name = "nickprock/archai-jev-games-1.5b-v2";
+        let m = reg.resolve(name, None).unwrap();
+        assert_eq!(m.revision, "04be1d565976baf8f0efdc2062e6277bda4516ae");
+        assert!(!reg.is_default(m));
+        assert_eq!(m.family, "qwen2-keys");
+        assert!(m.tasks.is_none());
+        assert_eq!(m.max_context, 512);
+        assert!(matches!(
+            m.head,
+            HeadSpec::KeyLogProb {
+                max_options: 4,
+                max_key_tokens: 4,
+                ..
+            }
+        ));
+        let q8 = m.variants.iter().find(|v| v.dtype == "q8_0").unwrap();
+        // the raw probabilities are declared as they are (a fit made them worse, see the evidence)
+        assert!(q8.calibration.declared);
+        assert_eq!(q8.calibration.temperature, Some(1.0));
+        let evidence = q8.calibration.evidence.as_deref().unwrap();
+        for phrase in ["No rescaling", "gave 1.16", "game-sensors-v1"] {
+            assert!(evidence.contains(phrase), "evidence lacks {phrase:?}");
+        }
+        // 24 vectors of the fp32 reference and the one of noul, which the notice owns up to
+        assert_eq!(q8.vectors.len(), 25);
+        let notice = m.notice.as_deref().unwrap();
+        for phrase in ["not a general-purpose model", "not an independent"] {
+            assert!(notice.contains(phrase), "notice lacks {phrase:?}");
+        }
+        // the weights are the file of that commit, and the tokenizer is the one of the base model
+        let Source::Gguf { file } = &q8.source else {
+            panic!("a GGUF source")
+        };
+        assert_eq!(
+            file.sha256,
+            "70ee8bee3dae5bf7568a2595f408598a23b7c18259a5f04a39e875c387ab31dd"
+        );
+        assert_eq!(file.size, 1_646_572_832);
+        assert_eq!(
+            m.tokenizer.file.sha256,
+            "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539"
+        );
+        // adding it did not move the default or the current revision of the others
+        let default = reg.default_entry().unwrap();
+        assert_eq!(default.name, "nickprock/archai-jev-qwen-1.5b");
     }
 
     #[test]
