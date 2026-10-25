@@ -89,3 +89,9 @@ CLAUDE.local.md
 *.onnx
 *.pt
 /models/
+# ...except the tiny fixture of the converter tests (about 156 KB in all, made by a script from a
+# random-weights checkpoint: it is not a model, and the CI tests need it)
+!/tests/data/qwen35-mini/**
+
+# Local benchmark results (not versioned)
+/benches/

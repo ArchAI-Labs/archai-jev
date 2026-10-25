@@ -2,9 +2,13 @@
 
 use crate::answers::{Answer, Answers, ChoiceAnswer, Probabilities, ScoreAnswer, YesNoAnswer};
 use crate::calibration::calibrated_softmax;
+use crate::calibration::formulas::{
+    choice_confidence, first_argmax, score_confidence, score_value,
+};
+use crate::control::{Control, NoControl};
 use crate::error::{Error, Result, ShapeProblem};
 use crate::schema::{Choice, Question, Questions, State};
-use crate::scorer::Scorer;
+use crate::scorer::{Calibration, Scorer};
 
 /// Ask every question of `questions` about `state`, all or nothing.
 ///
@@ -15,16 +19,39 @@ use crate::scorer::Scorer;
 /// [`Error::ScorerOutputShape`], [`Error::NonFiniteLogit`], [`Error::InvalidDistribution`],
 /// or whatever the scorer itself reports.
 pub fn ask(scorer: &dyn Scorer, state: &State, questions: &Questions) -> Result<Answers> {
-    let calibration = scorer.calibration();
-    let logits = scorer.score(state, questions)?;
+    ask_with(scorer, state, questions, &NoControl)
+}
 
+/// Like [`ask`], but `control` is asked between the rows of the request: if it says stop, the
+/// call ends with [`Error::Cancelled`] and no answer at all (spec 008).
+///
+/// # Errors
+/// [`Error::Cancelled`] when `control` says stop; otherwise as [`ask`].
+pub fn ask_with(
+    scorer: &dyn Scorer,
+    state: &State,
+    questions: &Questions,
+    control: &dyn Control,
+) -> Result<Answers> {
+    let calibration = scorer.calibration();
+    let logits = scorer.score_with(state, questions, control)?;
+    check_logits(questions, &logits)?;
+    answers_from_logits(questions, &logits, calibration)
+}
+
+/// The numeric checks of D20 level 4 on what a scorer returned: one list per question, one value
+/// per option, all finite. `ask` and the evaluation functions use this one function.
+///
+/// # Errors
+/// [`Error::ScorerOutputShape`] or [`Error::NonFiniteLogit`].
+pub fn check_logits(questions: &Questions, logits: &[Vec<f64>]) -> Result<()> {
     if logits.len() != questions.len() {
         return Err(Error::ScorerOutputShape(ShapeProblem::Questions {
             got: logits.len(),
             expected: questions.len(),
         }));
     }
-    for ((name, question), z) in questions.iter().zip(&logits) {
+    for ((name, question), z) in questions.iter().zip(logits) {
         if z.len() != question.option_count() {
             return Err(Error::ScorerOutputShape(ShapeProblem::Options {
                 question: name.to_string(),
@@ -33,7 +60,7 @@ pub fn ask(scorer: &dyn Scorer, state: &State, questions: &Questions) -> Result<
             }));
         }
     }
-    for ((name, _), z) in questions.iter().zip(&logits) {
+    for ((name, _), z) in questions.iter().zip(logits) {
         if let Some((index, value)) = z.iter().copied().enumerate().find(|(_, v)| !v.is_finite()) {
             return Err(Error::NonFiniteLogit {
                 question: name.to_string(),
@@ -42,9 +69,20 @@ pub fn ask(scorer: &dyn Scorer, state: &State, questions: &Questions) -> Result<
             });
         }
     }
+    Ok(())
+}
 
+/// Temperature, softmax and the typed answers, from logits that passed [`check_logits`].
+///
+/// # Errors
+/// [`Error::InvalidDistribution`] if a softmax is not a valid distribution.
+pub fn answers_from_logits(
+    questions: &Questions,
+    logits: &[Vec<f64>],
+    calibration: Calibration,
+) -> Result<Answers> {
     let mut items = Vec::with_capacity(logits.len());
-    for ((name, question), z) in questions.iter().zip(&logits) {
+    for ((name, question), z) in questions.iter().zip(logits) {
         let raw = calibrated_softmax(z, calibration.temperature())?;
         let probs = Probabilities::new(raw).map_err(|reason| Error::InvalidDistribution {
             question: name.to_string(),
@@ -89,73 +127,10 @@ fn choice_answer(choice: &Choice, p: &[f64], calibrated: bool) -> ChoiceAnswer {
     }
 }
 
-/// Index of the first maximum.
-pub(crate) fn first_argmax(p: &[f64]) -> usize {
-    let mut best = 0;
-    let mut best_value = f64::NEG_INFINITY;
-    for (i, v) in p.iter().copied().enumerate() {
-        if v > best_value {
-            best = i;
-            best_value = v;
-        }
-    }
-    best
-}
-
-/// `p / sum(p)`, uniform when the sum is 0 (Kev's `_normalize`).
-fn normalised(p: &[f64]) -> Vec<f64> {
-    let sum: f64 = p.iter().sum();
-    if sum > 0.0 {
-        p.iter().map(|x| x / sum).collect()
-    } else {
-        vec![1.0 / p.len().max(1) as f64; p.len()]
-    }
-}
-
-/// Choice confidence: 1 for a single option, otherwise `clamp01((max pÌ‚ - 1/K) / (1 - 1/K))`.
-pub(crate) fn choice_confidence(p: &[f64]) -> f64 {
-    let k = p.len();
-    if k <= 1 {
-        return 1.0;
-    }
-    let max = normalised(p).into_iter().fold(0.0_f64, f64::max);
-    let inv = 1.0 / k as f64;
-    ((max - inv) / (1.0 - inv)).clamp(0.0, 1.0)
-}
-
-/// Expected level `sum(i * p_i)`, 0-based.
-pub(crate) fn score_value(p: &[f64]) -> f64 {
-    p.iter().enumerate().map(|(i, p)| i as f64 * p).sum()
-}
-
-/// `D`, the mean absolute deviation of a uniform distribution over `l` levels (closed form).
-pub(crate) fn score_deviation(l: usize) -> f64 {
-    let lf = l as f64;
-    if l.is_multiple_of(2) {
-        lf / 4.0
-    } else {
-        (lf * lf - 1.0) / (4.0 * lf)
-    }
-}
-
-/// Score confidence: 1 for one level, otherwise `max(0, 1 - sum(pÌ‚_i |i - m|) / D)`.
-pub(crate) fn score_confidence(p: &[f64]) -> f64 {
-    let l = p.len();
-    if l <= 1 {
-        return 1.0;
-    }
-    let mode = first_argmax(p) as f64;
-    let spread: f64 = normalised(p)
-        .iter()
-        .enumerate()
-        .map(|(i, p)| p * (i as f64 - mode).abs())
-        .sum();
-    (1.0 - spread / score_deviation(l)).max(0.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::calibration::formulas::score_deviation;
     use crate::mock::{Fault, MockScorer};
     use crate::schema::{ChoiceOption, Score, StateValue, TextEntry, YesNo};
     use crate::scorer::Calibration;
@@ -213,6 +188,125 @@ mod tests {
             vec![1.0, -1.0],
         ])
         .with_calibration(Calibration::new(1.0, true).unwrap())
+    }
+
+    /// Stops the work the `limit`-th time it is asked.
+    struct StopAt {
+        asked: std::sync::atomic::AtomicUsize,
+        limit: usize,
+    }
+
+    impl Control for StopAt {
+        fn checkpoint(&self) -> Result<()> {
+            let n = self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if n >= self.limit {
+                Err(Error::Cancelled)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// A scorer that asks the control before each question, like the model scorer does between rows.
+    struct Obeying(MockScorer);
+
+    impl Scorer for Obeying {
+        fn calibration(&self) -> Calibration {
+            self.0.calibration()
+        }
+
+        fn score(&self, state: &State, questions: &Questions) -> Result<Vec<Vec<f64>>> {
+            self.score_with(state, questions, &NoControl)
+        }
+
+        fn score_with(
+            &self,
+            state: &State,
+            questions: &Questions,
+            control: &dyn Control,
+        ) -> Result<Vec<Vec<f64>>> {
+            for _ in questions.iter() {
+                control.checkpoint()?;
+            }
+            self.0.score(state, questions)
+        }
+    }
+
+    /// A scorer that only implements `score`: it never heard of a control.
+    struct Plain(MockScorer);
+
+    impl Scorer for Plain {
+        fn calibration(&self) -> Calibration {
+            self.0.calibration()
+        }
+
+        fn score(&self, state: &State, questions: &Questions) -> Result<Vec<Vec<f64>>> {
+            self.0.score(state, questions)
+        }
+    }
+
+    #[test]
+    fn check_logits_reports_shape_then_finiteness() {
+        let q = questions();
+        assert!(matches!(
+            check_logits(&q, &[vec![0.0; 3]]),
+            Err(Error::ScorerOutputShape(ShapeProblem::Questions {
+                got: 1,
+                expected: 3
+            }))
+        ));
+        let wrong = vec![vec![0.0; 3], vec![0.0; 2], vec![0.0; 2]];
+        assert!(matches!(
+            check_logits(&q, &wrong),
+            Err(Error::ScorerOutputShape(ShapeProblem::Options {
+                got: 2,
+                expected: 3,
+                ..
+            }))
+        ));
+        let nan = vec![vec![0.0, f64::NAN, 0.0], vec![0.0; 3], vec![0.0; 2]];
+        assert!(matches!(
+            check_logits(&q, &nan),
+            Err(Error::NonFiniteLogit { index: 1, .. })
+        ));
+        let ok = vec![vec![0.0; 3], vec![0.0; 3], vec![0.0; 2]];
+        assert!(check_logits(&q, &ok).is_ok());
+        assert!(answers_from_logits(&q, &ok, Calibration::uncalibrated()).is_ok());
+    }
+
+    #[test]
+    fn a_scorer_that_ignores_the_control_gives_the_same_answers() {
+        let stop_at_once = StopAt {
+            asked: std::sync::atomic::AtomicUsize::new(0),
+            limit: 1,
+        };
+        let plain = ask(&Plain(scripted()), &state(), &questions()).unwrap();
+        let with = ask_with(&Plain(scripted()), &state(), &questions(), &stop_at_once).unwrap();
+        assert_eq!(plain, with);
+        // the default `score_with` never even looked at it
+        assert_eq!(
+            stop_at_once.asked.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[test]
+    fn a_control_that_stops_leaves_no_partial_answer() {
+        let scorer = Obeying(scripted());
+        let stop_at_second = StopAt {
+            asked: std::sync::atomic::AtomicUsize::new(0),
+            limit: 2,
+        };
+        let verdict = ask_with(&scorer, &state(), &questions(), &stop_at_second);
+        assert!(matches!(verdict, Err(Error::Cancelled)), "{verdict:?}");
+        // the scorer looked once per question until it was stopped, and `ask` (no control) still works
+        assert_eq!(
+            stop_at_second
+                .asked
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert!(ask(&scorer, &state(), &questions()).is_ok());
     }
 
     #[test]

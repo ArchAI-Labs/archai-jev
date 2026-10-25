@@ -1,0 +1,6 @@
+[
+  { "label": "r020",       "pkg": "PATH\\TO\\unpacked-0.2.0-wheel", "env": {} },
+  { "label": "r020-aa",    "pkg": "PATH\\TO\\unpacked-0.2.0-wheel", "env": {} },
+  { "label": "r010",       "pkg": "PATH\\TO\\unpacked-0.1.0-wheel", "env": { "ARCHAI_JEV_CACHE": "PATH\\TO\\cache-of-0.1.0" } },
+  { "label": "r020-t8",    "pkg": "PATH\\TO\\unpacked-0.2.0-wheel", "env": { "ARCHAI_JEV_NUM_THREADS": "8" } }
+]

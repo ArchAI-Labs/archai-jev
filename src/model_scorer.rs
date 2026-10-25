@@ -1,20 +1,24 @@
-//! The scorer of a real model: prompt, forward, head (spec 006b section 7).
+﻿//! The scorer of a real model: prompt, forward, head (spec 006b section 7).
 //!
 //! One function, [`ModelScorer::run`], builds the prompt, runs the engine and applies the head.
 //! `ask` and the self-check of model loading both go through it, so what is verified at load time
 //! is what answers requests.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use crate::control::{Control, NoControl};
 use crate::engine::Forward;
 use crate::error::{Error, Result};
 use crate::heads::Head;
 use crate::json_strict::Json;
 use crate::models::verify::{RunOutput, VectorRunner};
-use crate::prompt::{PromptTokenizer, RequestLimits, Template};
+use crate::prefix::{Fingerprint, FingerprintParts, PrefixStore};
+use crate::prompt::{Prompt, PromptTokenizer, RequestLimits, Template};
 use crate::request::request_to_domain;
 use crate::schema::{Questions, State};
-use crate::scorer::{Calibration, Scorer};
+use crate::scorer::{CacheInfo, Calibration, Scorer};
+
+mod segmented;
 
 /// Everything a loaded model is made of.
 pub struct ModelScorer {
@@ -26,6 +30,33 @@ pub struct ModelScorer {
     model: String,
     max_context: u64,
     question_types: Vec<String>,
+    /// Memory the prefix cache may use, in bytes. `0` is the plain path: every question decodes
+    /// its whole row, as in 0.1.0.
+    prefix_limit: u64,
+    /// The longest prefix, in tokens, that may be saved between requests and restored: a family
+    /// with a sliding attention window cannot restore a longer one with the numbers of a cold
+    /// decode (spec 010b). `None`: any length.
+    snapshot_limit: Option<usize>,
+    /// Who computed the numbers a saved prefix holds.
+    fingerprint: Fingerprint,
+    /// The saved prefixes. Taken only while the engine session (which holds the engine's lock)
+    /// is alive, and never across a call into the engine.
+    store: Mutex<PrefixStore>,
+    #[cfg(test)]
+    mutant: Option<Mutant>,
+}
+
+/// Deliberate faults, to prove a test would notice them.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mutant {
+    /// Decode the shared prefix as one segment instead of the segments its cuts define, always.
+    MergedShared,
+    /// The same, only for the part after a restored prefix: what a cache hit would do if it did
+    /// not keep the partition.
+    NonCanonicalOnHit,
+    /// Save and restore prefixes longer than the limit of the family.
+    KeepsBeyondTheLimit,
 }
 
 /// What one request produced.
@@ -57,15 +88,103 @@ impl ModelScorer {
         max_context: u64,
         question_types: Vec<String>,
     ) -> Self {
+        let model = model.into();
+        let fingerprint = Fingerprint::new(&FingerprintParts {
+            model: &model,
+            gguf_sha256: "",
+            family: "",
+            dtype: "",
+            template_id: template.id(),
+            template_version: template.version(),
+            tokenizer_sha256: "",
+            engine: "",
+        });
         ModelScorer {
             template,
             tokenizer,
             forward,
             head,
             calibration,
-            model: model.into(),
+            model,
             max_context,
             question_types,
+            prefix_limit: 0,
+            snapshot_limit: None,
+            fingerprint,
+            store: Mutex::new(PrefixStore::new(0)),
+            #[cfg(test)]
+            mutant: None,
+        }
+    }
+
+    /// Reuse what the questions of a request share, with at most `limit_bytes` of memory for the
+    /// prefixes kept between requests (spec 007). `0` keeps the plain path.
+    #[must_use]
+    pub fn with_prefix_cache(mut self, limit_bytes: u64) -> Self {
+        self.prefix_limit = limit_bytes;
+        let limit = usize::try_from(limit_bytes).unwrap_or(usize::MAX);
+        self.store = Mutex::new(PrefixStore::new(limit));
+        self
+    }
+
+    /// Save and restore only prefixes of at most `tokens` tokens (the family's
+    /// `snapshot_max_tokens`); a longer shared prefix is still decoded once per request and
+    /// copied to its questions, but never kept for another request. `None`: no limit.
+    #[must_use]
+    pub fn with_snapshot_limit(mut self, tokens: Option<u64>) -> Self {
+        self.snapshot_limit = tokens.map(|t| usize::try_from(t).unwrap_or(usize::MAX));
+        self
+    }
+
+    /// Whether a prefix of `tokens` tokens may be saved or restored.
+    fn may_keep(&self, tokens: usize) -> bool {
+        #[cfg(test)]
+        if self.mutant == Some(Mutant::KeepsBeyondTheLimit) {
+            return true;
+        }
+        self.snapshot_limit.is_none_or(|limit| tokens <= limit)
+    }
+
+    /// Who computed the numbers: the identity a saved prefix is tied to (the backend builds it
+    /// from the checkpoint and the engine). Call before [`Self::with_prefix_cache`] or after:
+    /// the store is empty either way.
+    #[must_use]
+    pub fn with_fingerprint(mut self, fingerprint: Fingerprint) -> Self {
+        self.fingerprint = fingerprint;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_mutant(mut self, mutant: Mutant) -> Self {
+        self.mutant = Some(mutant);
+        self
+    }
+
+    fn store(&self) -> MutexGuard<'_, PrefixStore> {
+        self.store.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether the shared prefix is decoded as one segment (only the test mutant does).
+    fn merges_shared(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.mutant == Some(Mutant::MergedShared)
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+
+    /// Whether the part after a restored prefix is decoded as one segment (only a test mutant).
+    fn merges_after_restore(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.mutant == Some(Mutant::NonCanonicalOnHit)
+        }
+        #[cfg(not(test))]
+        {
+            false
         }
     }
 
@@ -75,6 +194,33 @@ impl ModelScorer {
     /// [`Error::Unsupported`] before the engine is touched; [`Error::Inference`] or
     /// [`Error::NonFiniteHidden`] from the engine; nothing is returned partially.
     pub fn run(&self, state: &State, questions: &Questions) -> Result<Run> {
+        self.run_with(state, questions, &NoControl)
+    }
+
+    /// Like [`run`](Self::run), asking `control` before each row of the request (and while the
+    /// request waits for the engine): if it says stop, the call ends with [`Error::Cancelled`] and
+    /// no result. A row that has started is never interrupted.
+    ///
+    /// # Errors
+    /// [`Error::Cancelled`] as said; otherwise as [`run`](Self::run).
+    pub fn run_with(
+        &self,
+        state: &State,
+        questions: &Questions,
+        control: &dyn Control,
+    ) -> Result<Run> {
+        self.run_on(state, questions, control, false)
+    }
+
+    /// `canonical` forces the path with cuts even with no cache (a store that keeps nothing):
+    /// the self-check uses it so that what it verifies does not depend on `prefix_cache_mib`.
+    fn run_on(
+        &self,
+        state: &State,
+        questions: &Questions,
+        control: &dyn Control,
+        canonical: bool,
+    ) -> Result<Run> {
         let types: Vec<&str> = self.question_types.iter().map(String::as_str).collect();
         let limits = RequestLimits {
             model: &self.model,
@@ -86,19 +232,37 @@ impl ModelScorer {
             .template
             .build(state, questions, &self.tokenizer, &limits)?;
 
-        let mut session = self.forward.begin(prompt.state())?;
+        let has_cuts = (0..prompt.branches().len())
+            .any(|i| prompt.row_cuts(i).is_some_and(|cuts| !cuts.is_empty()));
+        let logits = if (self.prefix_limit > 0 || canonical) && has_cuts {
+            self.score_segmented(questions, &prompt, control)?
+        } else {
+            self.score_plain(questions, &prompt, control)?
+        };
+        Ok(Run {
+            input_ids: prompt.packed_ids(),
+            questions: logits,
+        })
+    }
+
+    /// The state once, then every question on a copy of it: the path of 0.1.0.
+    fn score_plain(
+        &self,
+        questions: &Questions,
+        prompt: &Prompt,
+        control: &dyn Control,
+    ) -> Result<Vec<(String, Vec<f64>)>> {
+        let mut session = self.forward.begin_with(prompt.state(), control)?;
         let mut logits = Vec::with_capacity(questions.len());
         for ((name, question), branch) in questions.iter().zip(prompt.branches()) {
+            control.checkpoint()?;
             let specs = self.head.outputs(question, branch);
             let outputs = session
                 .row(branch.ids(), &specs)
                 .map_err(|e| name_the_question(e, name))?;
             logits.push((name.to_string(), self.head.score(question, &outputs)?));
         }
-        Ok(Run {
-            input_ids: prompt.packed_ids(),
-            questions: logits,
-        })
+        Ok(logits)
     }
 }
 
@@ -122,12 +286,46 @@ impl Scorer for ModelScorer {
     }
 
     fn score(&self, state: &State, questions: &Questions) -> Result<Vec<Vec<f64>>> {
+        self.score_with(state, questions, &NoControl)
+    }
+
+    fn score_with(
+        &self,
+        state: &State,
+        questions: &Questions,
+        control: &dyn Control,
+    ) -> Result<Vec<Vec<f64>>> {
         Ok(self
-            .run(state, questions)?
+            .run_with(state, questions, control)?
             .questions
             .into_iter()
             .map(|(_, z)| z)
             .collect())
+    }
+
+    fn cache_info(&self) -> Option<CacheInfo> {
+        if self.prefix_limit == 0 {
+            return None;
+        }
+        let s = self.store();
+        Some(CacheInfo {
+            limit_bytes: s.limit_bytes() as u64,
+            bytes: s.bytes() as u64,
+            entries: s.len() as u64,
+            hits: s.counters.hits,
+            misses: s.counters.misses,
+            evictions: s.counters.evictions,
+            tokens_reused: s.counters.tokens_reused,
+            tokens_decoded: s.counters.tokens_decoded,
+        })
+    }
+
+    fn clear_cache(&self) {
+        self.store().clear();
+    }
+
+    fn reset_cache_counters(&self) {
+        self.store().reset_counters();
     }
 }
 
@@ -135,13 +333,30 @@ impl VectorRunner for ModelScorer {
     fn run(&self, request: &Json) -> Result<RunOutput> {
         let (state, questions) =
             request_to_domain(request).map_err(|detail| Error::Inference { detail })?;
-        let run = ModelScorer::run(self, &state, &questions)?;
+        // the numbers of a K-quant differ by up to a few hundredths of probability between the
+        // row in one decode and the row in the segments of its cuts (D59): verify the latter
+        let run = self.run_on(&state, &questions, &NoControl, true)?;
         Ok(RunOutput {
             input_ids: run.input_ids,
             questions: run.questions,
         })
     }
 }
+
+#[cfg(test)]
+mod prefix_tests;
+
+#[cfg(test)]
+mod cache_tests;
+
+#[cfg(test)]
+mod key_tests;
+
+#[cfg(test)]
+mod pool_tests;
+
+#[cfg(test)]
+mod window_tests;
 
 #[cfg(test)]
 mod tests {

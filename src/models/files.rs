@@ -35,6 +35,13 @@ pub fn is_commit(s: &str) -> bool {
     s.len() == 40 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// True for something that looks like a Hugging Face repository id (`org/name`).
+pub fn is_repo_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'))
+}
+
 /// Why a path is not portable, if it is not.
 pub fn path_problem(path: &str) -> Option<&'static str> {
     if path.is_empty() {
@@ -104,11 +111,7 @@ impl FileEntry {
                     let repo = oo.str("repo")?;
                     let revision = oo.str("revision")?;
                     oo.finish()?;
-                    let ok_repo = !repo.is_empty()
-                        && repo.bytes().all(|b| {
-                            b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/')
-                        });
-                    if !ok_repo {
+                    if !is_repo_id(repo) {
                         return Err(bad(
                             "origin.repo",
                             format!("is not a repository id: {repo:?}"),

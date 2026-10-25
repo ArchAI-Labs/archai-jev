@@ -1,0 +1,2351 @@
+{
+ "schema_version": 1,
+ "name": "jaredpalmer/kev-0.8b",
+ "revision": "9a45d25eb2ab761841196625383fa1dff0e56c1e",
+ "family": "qwen35-pointer",
+ "architecture": {
+  "name": "qwen35",
+  "n_layers": 24,
+  "n_mtp_layers": 1,
+  "n_embd": 1024,
+  "n_ff": 3584,
+  "n_heads": 8,
+  "n_kv_heads": 2,
+  "head_dim": 256,
+  "n_vocab": 248320,
+  "tie_embeddings": true,
+  "full_attention_interval": 4,
+  "ssm_conv_kernel": 4,
+  "ssm_state_size": 128,
+  "ssm_group_count": 16,
+  "ssm_time_step_rank": 16,
+  "ssm_inner_size": 2048,
+  "rope_theta": 10000000,
+  "rope_dim": 64
+ },
+ "head": {
+  "kind": "pointer",
+  "d_model": 1024,
+  "proj_dim": 256,
+  "weights": {
+   "path": "head.pt",
+   "size": 2103999,
+   "sha256": "f400bd12802b2b105ae45d6b03774a158a3db4fccff42413734ddca2e5c920b6",
+   "origin": {
+    "repo": "jaredpalmer/kev-0.8b",
+    "revision": "9a45d25eb2ab761841196625383fa1dff0e56c1e"
+   }
+  }
+ },
+ "template": {
+  "id": "kev",
+  "version": 1
+ },
+ "tokenizer": {
+  "file": {
+   "path": "tokenizer.json",
+   "size": 19989325,
+   "sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+   "origin": {
+    "repo": "jaredpalmer/kev-0.8b",
+    "revision": "9a45d25eb2ab761841196625383fa1dff0e56c1e"
+   }
+  },
+  "special_tokens": {
+   "fim_prefix": {
+    "text": "<|fim_prefix|>",
+    "id": 248060
+   },
+   "fim_middle": {
+    "text": "<|fim_middle|>",
+    "id": 248061
+   },
+   "fim_suffix": {
+    "text": "<|fim_suffix|>",
+    "id": 248062
+   },
+   "box_start": {
+    "text": "<|box_start|>",
+    "id": 248049
+   },
+   "box_end": {
+    "text": "<|box_end|>",
+    "id": 248050
+   }
+  }
+ },
+ "max_context": 8205,
+ "trained_context": 7552,
+ "license": {
+  "spdx": "Apache-2.0",
+  "url": "https://huggingface.co/jaredpalmer/kev-0.8b",
+  "restrictions": null
+ },
+ "notice": "The temperature of this model was fitted by its author on the fp32 model; it was not refitted for the bf16 variant (the default), see the calibration evidence of each variant.",
+ "tasks": null,
+ "default_dtype": "bf16",
+ "variants": [
+  {
+   "dtype": "bf16",
+   "source": {
+    "kind": "hf-lora",
+    "base": {
+     "repo": "Qwen/Qwen3.5-0.8B-Base",
+     "revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68",
+     "config": {
+      "path": "config.json",
+      "size": 2907,
+      "sha256": "b90b86f35c8e6925ef74ee04d0e758f0a845c83a42089ad82bbaa948de9b4204",
+      "origin": {
+       "repo": "Qwen/Qwen3.5-0.8B-Base",
+       "revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
+      }
+     },
+     "weights": [
+      {
+       "path": "model.safetensors-00001-of-00001.safetensors",
+       "size": 1746942600,
+       "sha256": "c2b1e5a17d9c1e27685d92ed9b382911ebb99955ecd89052d1721241adfbab6c",
+       "origin": {
+        "repo": "Qwen/Qwen3.5-0.8B-Base",
+        "revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
+       }
+      }
+     ],
+     "tokenizer": {
+      "path": "tokenizer.json",
+      "size": 12807196,
+      "sha256": "fe000e3ed39ed12b8d2481d527d44f93c65d37e87645d2dcc80d1bf9d50d2927",
+      "origin": {
+       "repo": "Qwen/Qwen3.5-0.8B-Base",
+       "revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
+      }
+     },
+     "tokenizer_config": {
+      "path": "tokenizer_config.json",
+      "size": 16712,
+      "sha256": "e611fbccc7c29ef3b1cafb1cb7ea548d189968632901d678fd62be68c47885de",
+      "origin": {
+       "repo": "Qwen/Qwen3.5-0.8B-Base",
+       "revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
+      }
+     }
+    },
+    "adapter": {
+     "config": {
+      "path": "adapter_config.json",
+      "size": 1273,
+      "sha256": "748acb2cda88454cb1ba69d745ba336f3fcb5486eac349e90960c8b8d8d3e854",
+      "origin": {
+       "repo": "jaredpalmer/kev-0.8b",
+       "revision": "9a45d25eb2ab761841196625383fa1dff0e56c1e"
+      }
+     },
+     "weights": {
+      "path": "adapter_model.safetensors",
+      "size": 43338624,
+      "sha256": "9b908623acb162118575f4e7a94524f9c139c335be4bfb74d6cfceca01e1885a",
+      "origin": {
+       "repo": "jaredpalmer/kev-0.8b",
+       "revision": "9a45d25eb2ab761841196625383fa1dff0e56c1e"
+      }
+     }
+    }
+   },
+   "calibration": {
+    "declared": true,
+    "temperature": 2.3510958125672174,
+    "evidence": "Temperature stored in head.pt by Kev (jaredpalmer/kev-0.8b @ 9a45d25e): the minimum of the negative log-likelihood on 1,264 in-distribution development rows, fitted on the fp32 model. Not refitted for bf16 and the expected calibration error was not recomputed for bf16: the GGUF is the same checkpoint rounded to bfloat16, and on the 160 questions of the golden its probabilities differ from the fp32 reference by at most 1.1e-2 (spike S4), below the 0.0197 that Kev itself measures between its own bf16 and fp32."
+   },
+   "selfcheck": {
+    "vectors": [
+     {
+      "id": "readme-ticket",
+      "request": {
+       "state": "Shoes arrived two weeks late and in the wrong size. Also I see two charges on my card.",
+       "questions": {
+        "department": {
+         "type": "choice",
+         "instructions": "Which team should handle this?",
+         "criteria": {
+          "returns": "Exchanges, refunds, wrong or damaged items",
+          "shipping": "Delivery status, delays, lost packages",
+          "billing": "Charges, invoices, payment problems"
+         }
+        },
+        "escalate": {
+         "type": "noul",
+         "instructions": "Does this need urgent human attention?"
+        },
+        "frustration": {
+         "type": "score",
+         "instructions": "How frustrated is the customer?",
+         "criteria": [
+          "Calm",
+          "Frustrated",
+          "Very angry"
+         ]
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        1948,
+        6852,
+        11136,
+        1330,
+        5381,
+        3200,
+        321,
+        303,
+        279,
+        4808,
+        1331,
+        13,
+        7054,
+        353,
+        1436,
+        1330,
+        9892,
+        383,
+        821,
+        3575,
+        13,
+        248061,
+        22365,
+        2015,
+        1220,
+        3579,
+        411,
+        30,
+        248049,
+        4077,
+        25,
+        1326,
+        18778,
+        11,
+        70057,
+        11,
+        4808,
+        466,
+        19510,
+        3470,
+        248050,
+        248049,
+        25660,
+        25,
+        25375,
+        2552,
+        11,
+        30056,
+        11,
+        5384,
+        13779,
+        248050,
+        248049,
+        37355,
+        25,
+        75298,
+        11,
+        61893,
+        11,
+        7903,
+        5154,
+        248050,
+        248062,
+        248061,
+        20810,
+        411,
+        1144,
+        32556,
+        3611,
+        6326,
+        30,
+        248049,
+        2083,
+        248050,
+        248049,
+        9405,
+        248050,
+        248062,
+        248061,
+        4199,
+        31457,
+        369,
+        279,
+        5813,
+        30,
+        248049,
+        34,
+        7430,
+        248050,
+        248049,
+        37,
+        2585,
+        485,
+        639,
+        248050,
+        248049,
+        24936,
+        17960,
+        248050,
+        248062
+       ],
+       "questions": {
+        "department": {
+         "logits": [
+          2.420701503753662,
+          3.740786552429199,
+          2.5921950340270996
+         ],
+         "probabilities": [
+          0.2611697316169739,
+          0.45789825916290283,
+          0.2809319496154785
+         ]
+        },
+        "escalate": {
+         "logits": [
+          1.0163376331329346,
+          1.5288324356079102
+         ],
+         "probabilities": [
+          0.445719450712204,
+          0.5542805194854736
+         ]
+        },
+        "frustration": {
+         "logits": [
+          -0.129766047000885,
+          5.911535263061523,
+          3.8599190711975098
+         ],
+         "probabilities": [
+          0.051236219704151154,
+          0.6691544055938721,
+          0.27960941195487976
+         ]
+        }
+       }
+      }
+     },
+     {
+      "id": "choice-no-desc",
+      "request": {
+       "state": "Shoes arrived two weeks late and in the wrong size. Also I see two charges on my card.",
+       "questions": {
+        "team": {
+         "type": "choice",
+         "instructions": "Which team should handle this?",
+         "criteria": {
+          "returns": null,
+          "shipping": null,
+          "billing": null
+         }
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        1948,
+        6852,
+        11136,
+        1330,
+        5381,
+        3200,
+        321,
+        303,
+        279,
+        4808,
+        1331,
+        13,
+        7054,
+        353,
+        1436,
+        1330,
+        9892,
+        383,
+        821,
+        3575,
+        13,
+        248061,
+        22365,
+        2015,
+        1220,
+        3579,
+        411,
+        30,
+        248049,
+        4077,
+        248050,
+        248049,
+        25660,
+        248050,
+        248049,
+        37355,
+        248050,
+        248062
+       ],
+       "questions": {
+        "team": {
+         "logits": [
+          1.787405014038086,
+          3.683533191680908,
+          1.7937641143798828
+         ],
+         "probabilities": [
+          0.23569713532924652,
+          0.5279673933982849,
+          0.23633548617362976
+         ]
+        }
+       }
+      }
+     },
+     {
+      "id": "uni-devanagari-marks",
+      "request": {
+       "state": "\u0928\u092e\u0938\u094d\u0924\u0947, \u092e\u0947\u0930\u093e \u0911\u0930\u094d\u0921\u0930 \u0926\u0947\u0930 \u0938\u0947 \u092a\u0939\u0941\u0901\u091a\u093e \u0914\u0930 \u0915\u093e\u0930\u094d\u0921 \u092a\u0930 \u0926\u094b \u092c\u093e\u0930 \u092a\u0948\u0938\u0947 \u0915\u091f\u0947\u0964 \u0915\u0943\u092a\u092f\u093e \u092e\u0926\u0926 \u0915\u0940\u091c\u093f\u090f\u0964",
+       "questions": {
+        "topic": {
+         "type": "choice",
+         "instructions": "What is the message about?",
+         "criteria": {
+          "shipping": null,
+          "billing": null,
+          "other": null
+         }
+        },
+        "angry": {
+         "type": "noul",
+         "instructions": "Is the writer angry?"
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        58069,
+        84237,
+        75681,
+        196965,
+        33228,
+        11,
+        88077,
+        212545,
+        23121,
+        186764,
+        42710,
+        202043,
+        42710,
+        148799,
+        212545,
+        65855,
+        33228,
+        160837,
+        70184,
+        153113,
+        149043,
+        23121,
+        170729,
+        46215,
+        148504,
+        202043,
+        155171,
+        148799,
+        52743,
+        148791,
+        148504,
+        80752,
+        148978,
+        75681,
+        33228,
+        46215,
+        148681,
+        33228,
+        154845,
+        46215,
+        158827,
+        83188,
+        148355,
+        23121,
+        233568,
+        148651,
+        46215,
+        42201,
+        149106,
+        150709,
+        154845,
+        248061,
+        3710,
+        369,
+        279,
+        1876,
+        883,
+        30,
+        248049,
+        25660,
+        248050,
+        248049,
+        37355,
+        248050,
+        248049,
+        1520,
+        248050,
+        248062,
+        248061,
+        3742,
+        279,
+        6700,
+        17960,
+        30,
+        248049,
+        2083,
+        248050,
+        248049,
+        9405,
+        248050,
+        248062
+       ],
+       "questions": {
+        "topic": {
+         "logits": [
+          1.5798873901367188,
+          2.8948020935058594,
+          2.9790878295898438
+         ],
+         "probabilities": [
+          0.2191699594259262,
+          0.38341763615608215,
+          0.39741235971450806
+         ]
+        },
+        "angry": {
+         "logits": [
+          1.8529821634292603,
+          0.2897680401802063
+         ],
+         "probabilities": [
+          0.6603574752807617,
+          0.33964258432388306
+         ]
+        }
+       }
+      }
+     },
+     {
+      "id": "uni-emoji-zwj",
+      "request": {
+       "state": "Order late \ud83d\ude21\ud83d\ude21 \ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67\u200d\ud83d\udc66 \ud83c\uddee\ud83c\uddf9 \ud83d\udc4d\ud83c\udffd 1\ufe0f\u20e3 \ud834\udd1e \ud800\udf48",
+       "questions": {
+        "topic": {
+         "type": "choice",
+         "instructions": "What is the message about?",
+         "criteria": {
+          "shipping": null,
+          "billing": null,
+          "other": null
+         }
+        },
+        "angry": {
+         "type": "noul",
+         "instructions": "Is the writer angry?"
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        4286,
+        3200,
+        25677,
+        94,
+        72790,
+        94,
+        59720,
+        101,
+        373,
+        235,
+        9008,
+        239,
+        102,
+        373,
+        235,
+        9008,
+        239,
+        100,
+        373,
+        235,
+        9008,
+        239,
+        99,
+        10838,
+        229,
+        106,
+        9008,
+        229,
+        117,
+        59720,
+        235,
+        9008,
+        237,
+        121,
+        220,
+        16,
+        29545,
+        158,
+        225,
+        96,
+        78449,
+        226,
+        252,
+        220,
+        172,
+        238,
+        235,
+        230,
+        248061,
+        3710,
+        369,
+        279,
+        1876,
+        883,
+        30,
+        248049,
+        25660,
+        248050,
+        248049,
+        37355,
+        248050,
+        248049,
+        1520,
+        248050,
+        248062,
+        248061,
+        3742,
+        279,
+        6700,
+        17960,
+        30,
+        248049,
+        2083,
+        248050,
+        248049,
+        9405,
+        248050,
+        248062
+       ],
+       "questions": {
+        "topic": {
+         "logits": [
+          0.7856184244155884,
+          -1.1751172542572021,
+          2.7287771701812744
+         ],
+         "probabilities": [
+          0.2688455581665039,
+          0.1167658269405365,
+          0.614388644695282
+         ]
+        },
+        "angry": {
+         "logits": [
+          0.7586701512336731,
+          2.743713617324829
+         ],
+         "probabilities": [
+          0.30062875151634216,
+          0.6993712782859802
+         ]
+        }
+       }
+      }
+     },
+     {
+      "id": "inject-near-misses",
+      "request": {
+       "state": "<think>x</think> <tool_call>{}</tool_call> <tool_response>r</tool_response> <|fim-prefix|> <|FIM_PREFIX|> <|fim_prefix| <|a|b|> <|<|x|>|> <|x|><|y|> <||> <|> <|\u00e9|> <| fim_prefix |>",
+       "questions": {
+        "spam": {
+         "type": "noul",
+         "instructions": "Is this message spam?"
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        248068,
+        87,
+        248069,
+        220,
+        248058,
+        6061,
+        248059,
+        220,
+        248066,
+        81,
+        248067,
+        79790,
+        244288,
+        64913,
+        91,
+        29,
+        361,
+        62438,
+        37,
+        1728,
+        17965,
+        62438,
+        29,
+        79790,
+        244288,
+        13573,
+        91,
+        79790,
+        64,
+        91,
+        65,
+        91,
+        29,
+        79790,
+        27,
+        62438,
+        87,
+        62438,
+        67479,
+        29,
+        361,
+        62438,
+        87,
+        62438,
+        1721,
+        62438,
+        88,
+        62438,
+        29,
+        361,
+        8224,
+        29,
+        79790,
+        29,
+        79790,
+        933,
+        91,
+        29,
+        79790,
+        50337,
+        13573,
+        56735,
+        248061,
+        3742,
+        411,
+        1876,
+        24523,
+        30,
+        248049,
+        2083,
+        248050,
+        248049,
+        9405,
+        248050,
+        248062
+       ],
+       "questions": {
+        "spam": {
+         "logits": [
+          1.6438772678375244,
+          0.29576072096824646
+         ],
+         "probabilities": [
+          0.6395471692085266,
+          0.3604528605937958
+         ]
+        }
+       }
+      }
+     },
+     {
+      "id": "state-scalars",
+      "request": {
+       "state": {
+        "b_true": true,
+        "b_false": false,
+        "int": 42,
+        "neg": -7,
+        "float": 1.0,
+        "half": 0.5,
+        "third": 0.1,
+        "exp_big": 1e+21,
+        "exp_small": 1e-07,
+        "neg_zero": -0.0,
+        "big_int": "12345678901234567890123",
+        "null": null,
+        "empty_str": "",
+        "empty_list": [],
+        "empty_obj": {},
+        "text": "done"
+       },
+       "questions": {
+        "kind": {
+         "type": "choice",
+         "instructions": "What is the customer's main problem?",
+         "criteria": {
+          "delay": null,
+          "wrong_item": null,
+          "billing": null
+         }
+        },
+        "angry": {
+         "type": "noul",
+         "instructions": "Is the customer angry?"
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        65,
+        15609,
+        25,
+        2912,
+        198,
+        65,
+        34822,
+        25,
+        3439,
+        198,
+        390,
+        25,
+        220,
+        19,
+        17,
+        198,
+        27833,
+        25,
+        471,
+        22,
+        198,
+        3524,
+        25,
+        220,
+        16,
+        13,
+        15,
+        198,
+        35778,
+        25,
+        220,
+        15,
+        13,
+        20,
+        198,
+        30686,
+        25,
+        220,
+        15,
+        13,
+        16,
+        198,
+        4431,
+        35183,
+        25,
+        220,
+        16,
+        68,
+        10,
+        17,
+        16,
+        198,
+        4431,
+        30914,
+        25,
+        220,
+        16,
+        68,
+        12,
+        15,
+        22,
+        198,
+        27833,
+        18772,
+        25,
+        471,
+        15,
+        13,
+        15,
+        198,
+        15679,
+        3906,
+        25,
+        220,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        15,
+        16,
+        17,
+        18,
+        198,
+        2827,
+        25,
+        695,
+        3092,
+        2801,
+        25,
+        695,
+        3092,
+        1951,
+        25,
+        271,
+        3092,
+        7098,
+        25,
+        271,
+        1272,
+        25,
+        2725,
+        248061,
+        3710,
+        369,
+        279,
+        5813,
+        579,
+        1822,
+        3377,
+        30,
+        248049,
+        21572,
+        248050,
+        248049,
+        33713,
+        5457,
+        248050,
+        248049,
+        37355,
+        248050,
+        248062,
+        248061,
+        3742,
+        279,
+        5813,
+        17960,
+        30,
+        248049,
+        2083,
+        248050,
+        248049,
+        9405,
+        248050,
+        248062
+       ],
+       "questions": {
+        "kind": {
+         "logits": [
+          -5.908091068267822,
+          -1.98008394241333,
+          -6.348123550415039
+         ],
+         "probabilities": [
+          0.13995276391506195,
+          0.7439829707145691,
+          0.11606431752443314
+         ]
+        },
+        "angry": {
+         "logits": [
+          -0.6424887180328369,
+          -3.3310627937316895
+         ],
+         "probabilities": [
+          0.7583291530609131,
+          0.2416708767414093
+         ]
+        }
+       }
+      }
+     },
+     {
+      "id": "state-list-nested",
+      "request": {
+       "state": [
+        [
+         "a",
+         "b"
+        ],
+        [
+         "c",
+         [
+          "d",
+          "e"
+         ]
+        ],
+        {
+         "k": [
+          "x",
+          "y"
+         ]
+        }
+       ],
+       "questions": {
+        "kind": {
+         "type": "choice",
+         "instructions": "What is the customer's main problem?",
+         "criteria": {
+          "delay": null,
+          "wrong_item": null,
+          "billing": null
+         }
+        },
+        "angry": {
+         "type": "noul",
+         "instructions": "Is the customer angry?"
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        12,
+        471,
+        264,
+        198,
+        220,
+        471,
+        292,
+        198,
+        12,
+        471,
+        272,
+        198,
+        220,
+        471,
+        471,
+        293,
+        198,
+        262,
+        471,
+        378,
+        198,
+        12,
+        580,
+        25,
+        198,
+        262,
+        471,
+        830,
+        198,
+        262,
+        471,
+        374,
+        248061,
+        3710,
+        369,
+        279,
+        5813,
+        579,
+        1822,
+        3377,
+        30,
+        248049,
+        21572,
+        248050,
+        248049,
+        33713,
+        5457,
+        248050,
+        248049,
+        37355,
+        248050,
+        248062,
+        248061,
+        3742,
+        279,
+        5813,
+        17960,
+        30,
+        248049,
+        2083,
+        248050,
+        248049,
+        9405,
+        248050,
+        248062
+       ],
+       "questions": {
+        "kind": {
+         "logits": [
+          -2.30362868309021,
+          -1.2575536966323853,
+          -5.169620513916016
+         ],
+         "probabilities": [
+          0.3501514792442322,
+          0.5463700890541077,
+          0.10347843170166016
+         ]
+        },
+        "angry": {
+         "logits": [
+          -0.008359968662261963,
+          -1.700347900390625
+         ],
+         "probabilities": [
+          0.6725320219993591,
+          0.32746803760528564
+         ]
+        }
+       }
+      }
+     },
+     {
+      "id": "uni-nfd-input",
+      "request": {
+       "state": "Cafe\u0301 re\u0301sume\u0301: le client est tre\u0300s fa\u0302che\u0301. A\u0308 o\u0308 u\u0308.",
+       "questions": {
+        "topic": {
+         "type": "choice",
+         "instructions": "What is the message about?",
+         "criteria": {
+          "shipping": null,
+          "billing": null,
+          "other": null
+         }
+        },
+        "angry": {
+         "type": "noul",
+         "instructions": "Is the writer angry?"
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        34,
+        2492,
+        933,
+        238976,
+        25,
+        501,
+        2849,
+        1725,
+        24111,
+        281,
+        8568,
+        71500,
+        13,
+        47061,
+        16445,
+        10176,
+        13,
+        248061,
+        3710,
+        369,
+        279,
+        1876,
+        883,
+        30,
+        248049,
+        25660,
+        248050,
+        248049,
+        37355,
+        248050,
+        248049,
+        1520,
+        248050,
+        248062,
+        248061,
+        3742,
+        279,
+        6700,
+        17960,
+        30,
+        248049,
+        2083,
+        248050,
+        248049,
+        9405,
+        248050,
+        248062
+       ],
+       "questions": {
+        "topic": {
+         "logits": [
+          -1.7582838535308838,
+          -0.7486294507980347,
+          2.6234540939331055
+         ],
+         "probabilities": [
+          0.11130965501070023,
+          0.17101579904556274,
+          0.7176745533943176
+         ]
+        },
+        "angry": {
+         "logits": [
+          1.0117998123168945,
+          5.227567672729492
+         ],
+         "probabilities": [
+          0.14269214868545532,
+          0.8573078513145447
+         ]
+        }
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "dtype": "f32",
+   "source": {
+    "kind": "hf-lora",
+    "base": {
+     "repo": "Qwen/Qwen3.5-0.8B-Base",
+     "revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68",
+     "config": {
+      "path": "config.json",
+      "size": 2907,
+      "sha256": "b90b86f35c8e6925ef74ee04d0e758f0a845c83a42089ad82bbaa948de9b4204",
+      "origin": {
+       "repo": "Qwen/Qwen3.5-0.8B-Base",
+       "revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
+      }
+     },
+     "weights": [
+      {
+       "path": "model.safetensors-00001-of-00001.safetensors",
+       "size": 1746942600,
+       "sha256": "c2b1e5a17d9c1e27685d92ed9b382911ebb99955ecd89052d1721241adfbab6c",
+       "origin": {
+        "repo": "Qwen/Qwen3.5-0.8B-Base",
+        "revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
+       }
+      }
+     ],
+     "tokenizer": {
+      "path": "tokenizer.json",
+      "size": 12807196,
+      "sha256": "fe000e3ed39ed12b8d2481d527d44f93c65d37e87645d2dcc80d1bf9d50d2927",
+      "origin": {
+       "repo": "Qwen/Qwen3.5-0.8B-Base",
+       "revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
+      }
+     },
+     "tokenizer_config": {
+      "path": "tokenizer_config.json",
+      "size": 16712,
+      "sha256": "e611fbccc7c29ef3b1cafb1cb7ea548d189968632901d678fd62be68c47885de",
+      "origin": {
+       "repo": "Qwen/Qwen3.5-0.8B-Base",
+       "revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
+      }
+     }
+    },
+    "adapter": {
+     "config": {
+      "path": "adapter_config.json",
+      "size": 1273,
+      "sha256": "748acb2cda88454cb1ba69d745ba336f3fcb5486eac349e90960c8b8d8d3e854",
+      "origin": {
+       "repo": "jaredpalmer/kev-0.8b",
+       "revision": "9a45d25eb2ab761841196625383fa1dff0e56c1e"
+      }
+     },
+     "weights": {
+      "path": "adapter_model.safetensors",
+      "size": 43338624,
+      "sha256": "9b908623acb162118575f4e7a94524f9c139c335be4bfb74d6cfceca01e1885a",
+      "origin": {
+       "repo": "jaredpalmer/kev-0.8b",
+       "revision": "9a45d25eb2ab761841196625383fa1dff0e56c1e"
+      }
+     }
+    }
+   },
+   "calibration": {
+    "declared": true,
+    "temperature": 2.3510958125672174,
+    "evidence": "Temperature stored in head.pt by Kev (jaredpalmer/kev-0.8b @ 9a45d25e): the minimum of the negative log-likelihood on 1,264 in-distribution development rows, fitted on the fp32 model. Not refitted here."
+   },
+   "selfcheck": {
+    "vectors": [
+     {
+      "id": "readme-ticket",
+      "request": {
+       "state": "Shoes arrived two weeks late and in the wrong size. Also I see two charges on my card.",
+       "questions": {
+        "department": {
+         "type": "choice",
+         "instructions": "Which team should handle this?",
+         "criteria": {
+          "returns": "Exchanges, refunds, wrong or damaged items",
+          "shipping": "Delivery status, delays, lost packages",
+          "billing": "Charges, invoices, payment problems"
+         }
+        },
+        "escalate": {
+         "type": "noul",
+         "instructions": "Does this need urgent human attention?"
+        },
+        "frustration": {
+         "type": "score",
+         "instructions": "How frustrated is the customer?",
+         "criteria": [
+          "Calm",
+          "Frustrated",
+          "Very angry"
+         ]
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        1948,
+        6852,
+        11136,
+        1330,
+        5381,
+        3200,
+        321,
+        303,
+        279,
+        4808,
+        1331,
+        13,
+        7054,
+        353,
+        1436,
+        1330,
+        9892,
+        383,
+        821,
+        3575,
+        13,
+        248061,
+        22365,
+        2015,
+        1220,
+        3579,
+        411,
+        30,
+        248049,
+        4077,
+        25,
+        1326,
+        18778,
+        11,
+        70057,
+        11,
+        4808,
+        466,
+        19510,
+        3470,
+        248050,
+        248049,
+        25660,
+        25,
+        25375,
+        2552,
+        11,
+        30056,
+        11,
+        5384,
+        13779,
+        248050,
+        248049,
+        37355,
+        25,
+        75298,
+        11,
+        61893,
+        11,
+        7903,
+        5154,
+        248050,
+        248062,
+        248061,
+        20810,
+        411,
+        1144,
+        32556,
+        3611,
+        6326,
+        30,
+        248049,
+        2083,
+        248050,
+        248049,
+        9405,
+        248050,
+        248062,
+        248061,
+        4199,
+        31457,
+        369,
+        279,
+        5813,
+        30,
+        248049,
+        34,
+        7430,
+        248050,
+        248049,
+        37,
+        2585,
+        485,
+        639,
+        248050,
+        248049,
+        24936,
+        17960,
+        248050,
+        248062
+       ],
+       "questions": {
+        "department": {
+         "logits": [
+          2.420701503753662,
+          3.740786552429199,
+          2.5921950340270996
+         ],
+         "probabilities": [
+          0.2611697316169739,
+          0.45789825916290283,
+          0.2809319496154785
+         ]
+        },
+        "escalate": {
+         "logits": [
+          1.0163376331329346,
+          1.5288324356079102
+         ],
+         "probabilities": [
+          0.445719450712204,
+          0.5542805194854736
+         ]
+        },
+        "frustration": {
+         "logits": [
+          -0.129766047000885,
+          5.911535263061523,
+          3.8599190711975098
+         ],
+         "probabilities": [
+          0.051236219704151154,
+          0.6691544055938721,
+          0.27960941195487976
+         ]
+        }
+       }
+      }
+     },
+     {
+      "id": "choice-no-desc",
+      "request": {
+       "state": "Shoes arrived two weeks late and in the wrong size. Also I see two charges on my card.",
+       "questions": {
+        "team": {
+         "type": "choice",
+         "instructions": "Which team should handle this?",
+         "criteria": {
+          "returns": null,
+          "shipping": null,
+          "billing": null
+         }
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        1948,
+        6852,
+        11136,
+        1330,
+        5381,
+        3200,
+        321,
+        303,
+        279,
+        4808,
+        1331,
+        13,
+        7054,
+        353,
+        1436,
+        1330,
+        9892,
+        383,
+        821,
+        3575,
+        13,
+        248061,
+        22365,
+        2015,
+        1220,
+        3579,
+        411,
+        30,
+        248049,
+        4077,
+        248050,
+        248049,
+        25660,
+        248050,
+        248049,
+        37355,
+        248050,
+        248062
+       ],
+       "questions": {
+        "team": {
+         "logits": [
+          1.787405014038086,
+          3.683533191680908,
+          1.7937641143798828
+         ],
+         "probabilities": [
+          0.23569713532924652,
+          0.5279673933982849,
+          0.23633548617362976
+         ]
+        }
+       }
+      }
+     },
+     {
+      "id": "uni-devanagari-marks",
+      "request": {
+       "state": "\u0928\u092e\u0938\u094d\u0924\u0947, \u092e\u0947\u0930\u093e \u0911\u0930\u094d\u0921\u0930 \u0926\u0947\u0930 \u0938\u0947 \u092a\u0939\u0941\u0901\u091a\u093e \u0914\u0930 \u0915\u093e\u0930\u094d\u0921 \u092a\u0930 \u0926\u094b \u092c\u093e\u0930 \u092a\u0948\u0938\u0947 \u0915\u091f\u0947\u0964 \u0915\u0943\u092a\u092f\u093e \u092e\u0926\u0926 \u0915\u0940\u091c\u093f\u090f\u0964",
+       "questions": {
+        "topic": {
+         "type": "choice",
+         "instructions": "What is the message about?",
+         "criteria": {
+          "shipping": null,
+          "billing": null,
+          "other": null
+         }
+        },
+        "angry": {
+         "type": "noul",
+         "instructions": "Is the writer angry?"
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        58069,
+        84237,
+        75681,
+        196965,
+        33228,
+        11,
+        88077,
+        212545,
+        23121,
+        186764,
+        42710,
+        202043,
+        42710,
+        148799,
+        212545,
+        65855,
+        33228,
+        160837,
+        70184,
+        153113,
+        149043,
+        23121,
+        170729,
+        46215,
+        148504,
+        202043,
+        155171,
+        148799,
+        52743,
+        148791,
+        148504,
+        80752,
+        148978,
+        75681,
+        33228,
+        46215,
+        148681,
+        33228,
+        154845,
+        46215,
+        158827,
+        83188,
+        148355,
+        23121,
+        233568,
+        148651,
+        46215,
+        42201,
+        149106,
+        150709,
+        154845,
+        248061,
+        3710,
+        369,
+        279,
+        1876,
+        883,
+        30,
+        248049,
+        25660,
+        248050,
+        248049,
+        37355,
+        248050,
+        248049,
+        1520,
+        248050,
+        248062,
+        248061,
+        3742,
+        279,
+        6700,
+        17960,
+        30,
+        248049,
+        2083,
+        248050,
+        248049,
+        9405,
+        248050,
+        248062
+       ],
+       "questions": {
+        "topic": {
+         "logits": [
+          1.5798873901367188,
+          2.8948020935058594,
+          2.9790878295898438
+         ],
+         "probabilities": [
+          0.2191699594259262,
+          0.38341763615608215,
+          0.39741235971450806
+         ]
+        },
+        "angry": {
+         "logits": [
+          1.8529821634292603,
+          0.2897680401802063
+         ],
+         "probabilities": [
+          0.6603574752807617,
+          0.33964258432388306
+         ]
+        }
+       }
+      }
+     },
+     {
+      "id": "uni-emoji-zwj",
+      "request": {
+       "state": "Order late \ud83d\ude21\ud83d\ude21 \ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67\u200d\ud83d\udc66 \ud83c\uddee\ud83c\uddf9 \ud83d\udc4d\ud83c\udffd 1\ufe0f\u20e3 \ud834\udd1e \ud800\udf48",
+       "questions": {
+        "topic": {
+         "type": "choice",
+         "instructions": "What is the message about?",
+         "criteria": {
+          "shipping": null,
+          "billing": null,
+          "other": null
+         }
+        },
+        "angry": {
+         "type": "noul",
+         "instructions": "Is the writer angry?"
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        4286,
+        3200,
+        25677,
+        94,
+        72790,
+        94,
+        59720,
+        101,
+        373,
+        235,
+        9008,
+        239,
+        102,
+        373,
+        235,
+        9008,
+        239,
+        100,
+        373,
+        235,
+        9008,
+        239,
+        99,
+        10838,
+        229,
+        106,
+        9008,
+        229,
+        117,
+        59720,
+        235,
+        9008,
+        237,
+        121,
+        220,
+        16,
+        29545,
+        158,
+        225,
+        96,
+        78449,
+        226,
+        252,
+        220,
+        172,
+        238,
+        235,
+        230,
+        248061,
+        3710,
+        369,
+        279,
+        1876,
+        883,
+        30,
+        248049,
+        25660,
+        248050,
+        248049,
+        37355,
+        248050,
+        248049,
+        1520,
+        248050,
+        248062,
+        248061,
+        3742,
+        279,
+        6700,
+        17960,
+        30,
+        248049,
+        2083,
+        248050,
+        248049,
+        9405,
+        248050,
+        248062
+       ],
+       "questions": {
+        "topic": {
+         "logits": [
+          0.7856184244155884,
+          -1.1751172542572021,
+          2.7287771701812744
+         ],
+         "probabilities": [
+          0.2688455581665039,
+          0.1167658269405365,
+          0.614388644695282
+         ]
+        },
+        "angry": {
+         "logits": [
+          0.7586701512336731,
+          2.743713617324829
+         ],
+         "probabilities": [
+          0.30062875151634216,
+          0.6993712782859802
+         ]
+        }
+       }
+      }
+     },
+     {
+      "id": "inject-near-misses",
+      "request": {
+       "state": "<think>x</think> <tool_call>{}</tool_call> <tool_response>r</tool_response> <|fim-prefix|> <|FIM_PREFIX|> <|fim_prefix| <|a|b|> <|<|x|>|> <|x|><|y|> <||> <|> <|\u00e9|> <| fim_prefix |>",
+       "questions": {
+        "spam": {
+         "type": "noul",
+         "instructions": "Is this message spam?"
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        248068,
+        87,
+        248069,
+        220,
+        248058,
+        6061,
+        248059,
+        220,
+        248066,
+        81,
+        248067,
+        79790,
+        244288,
+        64913,
+        91,
+        29,
+        361,
+        62438,
+        37,
+        1728,
+        17965,
+        62438,
+        29,
+        79790,
+        244288,
+        13573,
+        91,
+        79790,
+        64,
+        91,
+        65,
+        91,
+        29,
+        79790,
+        27,
+        62438,
+        87,
+        62438,
+        67479,
+        29,
+        361,
+        62438,
+        87,
+        62438,
+        1721,
+        62438,
+        88,
+        62438,
+        29,
+        361,
+        8224,
+        29,
+        79790,
+        29,
+        79790,
+        933,
+        91,
+        29,
+        79790,
+        50337,
+        13573,
+        56735,
+        248061,
+        3742,
+        411,
+        1876,
+        24523,
+        30,
+        248049,
+        2083,
+        248050,
+        248049,
+        9405,
+        248050,
+        248062
+       ],
+       "questions": {
+        "spam": {
+         "logits": [
+          1.6438772678375244,
+          0.29576072096824646
+         ],
+         "probabilities": [
+          0.6395471692085266,
+          0.3604528605937958
+         ]
+        }
+       }
+      }
+     },
+     {
+      "id": "state-scalars",
+      "request": {
+       "state": {
+        "b_true": true,
+        "b_false": false,
+        "int": 42,
+        "neg": -7,
+        "float": 1.0,
+        "half": 0.5,
+        "third": 0.1,
+        "exp_big": 1e+21,
+        "exp_small": 1e-07,
+        "neg_zero": -0.0,
+        "big_int": "12345678901234567890123",
+        "null": null,
+        "empty_str": "",
+        "empty_list": [],
+        "empty_obj": {},
+        "text": "done"
+       },
+       "questions": {
+        "kind": {
+         "type": "choice",
+         "instructions": "What is the customer's main problem?",
+         "criteria": {
+          "delay": null,
+          "wrong_item": null,
+          "billing": null
+         }
+        },
+        "angry": {
+         "type": "noul",
+         "instructions": "Is the customer angry?"
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        65,
+        15609,
+        25,
+        2912,
+        198,
+        65,
+        34822,
+        25,
+        3439,
+        198,
+        390,
+        25,
+        220,
+        19,
+        17,
+        198,
+        27833,
+        25,
+        471,
+        22,
+        198,
+        3524,
+        25,
+        220,
+        16,
+        13,
+        15,
+        198,
+        35778,
+        25,
+        220,
+        15,
+        13,
+        20,
+        198,
+        30686,
+        25,
+        220,
+        15,
+        13,
+        16,
+        198,
+        4431,
+        35183,
+        25,
+        220,
+        16,
+        68,
+        10,
+        17,
+        16,
+        198,
+        4431,
+        30914,
+        25,
+        220,
+        16,
+        68,
+        12,
+        15,
+        22,
+        198,
+        27833,
+        18772,
+        25,
+        471,
+        15,
+        13,
+        15,
+        198,
+        15679,
+        3906,
+        25,
+        220,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        15,
+        16,
+        17,
+        18,
+        198,
+        2827,
+        25,
+        695,
+        3092,
+        2801,
+        25,
+        695,
+        3092,
+        1951,
+        25,
+        271,
+        3092,
+        7098,
+        25,
+        271,
+        1272,
+        25,
+        2725,
+        248061,
+        3710,
+        369,
+        279,
+        5813,
+        579,
+        1822,
+        3377,
+        30,
+        248049,
+        21572,
+        248050,
+        248049,
+        33713,
+        5457,
+        248050,
+        248049,
+        37355,
+        248050,
+        248062,
+        248061,
+        3742,
+        279,
+        5813,
+        17960,
+        30,
+        248049,
+        2083,
+        248050,
+        248049,
+        9405,
+        248050,
+        248062
+       ],
+       "questions": {
+        "kind": {
+         "logits": [
+          -5.908091068267822,
+          -1.98008394241333,
+          -6.348123550415039
+         ],
+         "probabilities": [
+          0.13995276391506195,
+          0.7439829707145691,
+          0.11606431752443314
+         ]
+        },
+        "angry": {
+         "logits": [
+          -0.6424887180328369,
+          -3.3310627937316895
+         ],
+         "probabilities": [
+          0.7583291530609131,
+          0.2416708767414093
+         ]
+        }
+       }
+      }
+     },
+     {
+      "id": "state-list-nested",
+      "request": {
+       "state": [
+        [
+         "a",
+         "b"
+        ],
+        [
+         "c",
+         [
+          "d",
+          "e"
+         ]
+        ],
+        {
+         "k": [
+          "x",
+          "y"
+         ]
+        }
+       ],
+       "questions": {
+        "kind": {
+         "type": "choice",
+         "instructions": "What is the customer's main problem?",
+         "criteria": {
+          "delay": null,
+          "wrong_item": null,
+          "billing": null
+         }
+        },
+        "angry": {
+         "type": "noul",
+         "instructions": "Is the customer angry?"
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        12,
+        471,
+        264,
+        198,
+        220,
+        471,
+        292,
+        198,
+        12,
+        471,
+        272,
+        198,
+        220,
+        471,
+        471,
+        293,
+        198,
+        262,
+        471,
+        378,
+        198,
+        12,
+        580,
+        25,
+        198,
+        262,
+        471,
+        830,
+        198,
+        262,
+        471,
+        374,
+        248061,
+        3710,
+        369,
+        279,
+        5813,
+        579,
+        1822,
+        3377,
+        30,
+        248049,
+        21572,
+        248050,
+        248049,
+        33713,
+        5457,
+        248050,
+        248049,
+        37355,
+        248050,
+        248062,
+        248061,
+        3742,
+        279,
+        5813,
+        17960,
+        30,
+        248049,
+        2083,
+        248050,
+        248049,
+        9405,
+        248050,
+        248062
+       ],
+       "questions": {
+        "kind": {
+         "logits": [
+          -2.30362868309021,
+          -1.2575536966323853,
+          -5.169620513916016
+         ],
+         "probabilities": [
+          0.3501514792442322,
+          0.5463700890541077,
+          0.10347843170166016
+         ]
+        },
+        "angry": {
+         "logits": [
+          -0.008359968662261963,
+          -1.700347900390625
+         ],
+         "probabilities": [
+          0.6725320219993591,
+          0.32746803760528564
+         ]
+        }
+       }
+      }
+     },
+     {
+      "id": "uni-nfd-input",
+      "request": {
+       "state": "Cafe\u0301 re\u0301sume\u0301: le client est tre\u0300s fa\u0302che\u0301. A\u0308 o\u0308 u\u0308.",
+       "questions": {
+        "topic": {
+         "type": "choice",
+         "instructions": "What is the message about?",
+         "criteria": {
+          "shipping": null,
+          "billing": null,
+          "other": null
+         }
+        },
+        "angry": {
+         "type": "noul",
+         "instructions": "Is the writer angry?"
+        }
+       }
+      },
+      "expected": {
+       "input_ids": [
+        248060,
+        34,
+        2492,
+        933,
+        238976,
+        25,
+        501,
+        2849,
+        1725,
+        24111,
+        281,
+        8568,
+        71500,
+        13,
+        47061,
+        16445,
+        10176,
+        13,
+        248061,
+        3710,
+        369,
+        279,
+        1876,
+        883,
+        30,
+        248049,
+        25660,
+        248050,
+        248049,
+        37355,
+        248050,
+        248049,
+        1520,
+        248050,
+        248062,
+        248061,
+        3742,
+        279,
+        6700,
+        17960,
+        30,
+        248049,
+        2083,
+        248050,
+        248049,
+        9405,
+        248050,
+        248062
+       ],
+       "questions": {
+        "topic": {
+         "logits": [
+          -1.7582838535308838,
+          -0.7486294507980347,
+          2.6234540939331055
+         ],
+         "probabilities": [
+          0.11130965501070023,
+          0.17101579904556274,
+          0.7176745533943176
+         ]
+        },
+        "angry": {
+         "logits": [
+          1.0117998123168945,
+          5.227567672729492
+         ],
+         "probabilities": [
+          0.14269214868545532,
+          0.8573078513145447
+         ]
+        }
+       }
+      }
+     }
+    ]
+   }
+  }
+ ]
+}

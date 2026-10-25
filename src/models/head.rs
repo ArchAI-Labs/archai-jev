@@ -6,7 +6,7 @@ use super::incompat::Incompat;
 use super::manifest::HeadSpec;
 
 /// What a head-weights reader returns: the four tensors and the metadata of the file.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct HeadTensors {
     /// `(name, shape, f32 values)` per tensor.
     pub tensors: Vec<(String, Vec<u64>, Vec<f32>)>,
@@ -14,6 +14,12 @@ pub struct HeadTensors {
     pub temperature: Option<f64>,
     /// The hidden size stored in the file, if any.
     pub d_model: Option<u64>,
+    /// The projection size stored in the file (`head_dim` of Kev), if any.
+    pub head_dim: Option<u64>,
+    /// The base model the head was trained on (`base`), if the file says.
+    pub base: Option<String>,
+    /// The revision of that base model (`base_revision`), if the file says.
+    pub base_revision: Option<String>,
 }
 
 /// Reads a head-weights file without running any code in it (018 implements it).
@@ -32,7 +38,9 @@ fn bad(detail: String) -> Incompat {
 /// Check a pointer head: exactly `q.weight`, `q.bias`, `k.weight`, `k.bias` with the right
 /// shapes, all finite, and a file whose metadata agrees with the manifest.
 ///
-/// `declared_temperature` is the variant's declared temperature, if any.
+/// `declared_temperature` is the variant's declared temperature, if any (a declared one must
+/// be stored in the file and equal); `base` is the `(repo, revision)` of the base model the
+/// checkpoint is converted from, if it is (the file must say the same).
 ///
 /// # Errors
 /// [`Incompat::HeadWeights`] naming the tensor or metadata that is wrong.
@@ -41,6 +49,7 @@ pub fn check_pointer(
     reader: &dyn HeadReader,
     path: &Path,
     declared_temperature: Option<f64>,
+    base: Option<(&str, &str)>,
 ) -> Result<(), Incompat> {
     let HeadSpec::Pointer {
         d_model, proj_dim, ..
@@ -75,11 +84,24 @@ pub fn check_pointer(
     {
         return Err(bad(format!("tensor '{n}' is not expected")));
     }
-    if let (Some(file_t), Some(declared)) = (file.temperature, declared_temperature)
-        && (file_t - declared).abs() > 1e-9
+    match (file.temperature, declared_temperature) {
+        (Some(file_t), Some(declared)) if (file_t - declared).abs() > 1e-9 => {
+            return Err(bad(format!(
+                "the file stores temperature {file_t}, the manifest declares {declared}"
+            )));
+        }
+        (None, Some(declared)) => {
+            return Err(bad(format!(
+                "the manifest declares temperature {declared} but the file stores none (nothing is assumed)"
+            )));
+        }
+        _ => {}
+    }
+    if let Some(t) = file.temperature
+        && !(t.is_finite() && t > 0.0)
     {
         return Err(bad(format!(
-            "the file stores temperature {file_t}, the manifest declares {declared}"
+            "the file stores temperature {t}, which is not a finite number above 0"
         )));
     }
     if let Some(d) = file.d_model
@@ -88,6 +110,28 @@ pub fn check_pointer(
         return Err(bad(format!(
             "the file stores d_model {d}, the manifest declares {d_model}"
         )));
+    }
+    if let Some(h) = file.head_dim
+        && h != *proj_dim
+    {
+        return Err(bad(format!(
+            "the file stores head_dim {h}, the manifest declares proj_dim {proj_dim}"
+        )));
+    }
+    if let Some((repo, revision)) = base {
+        let got = |v: &Option<String>| v.clone().unwrap_or_else(|| "nothing".to_string());
+        if file.base.as_deref() != Some(repo) {
+            return Err(bad(format!(
+                "the file says it was trained on base {}, the manifest's source is {repo}",
+                got(&file.base)
+            )));
+        }
+        if file.base_revision.as_deref() != Some(revision) {
+            return Err(bad(format!(
+                "the file says base revision {}, the manifest's source is {revision}",
+                got(&file.base_revision)
+            )));
+        }
     }
     Ok(())
 }
@@ -127,11 +171,24 @@ mod tests {
             ],
             temperature: Some(2.351),
             d_model: Some(4),
+            head_dim: Some(2),
+            base: Some("Org/Base".into()),
+            base_revision: Some("a".repeat(40)),
         }
     }
 
     fn run(t: HeadTensors, declared: Option<f64>) -> Result<(), Incompat> {
-        check_pointer(&head(), &Fixed(t), Path::new("x"), declared)
+        check_pointer(&head(), &Fixed(t), Path::new("x"), declared, None)
+    }
+
+    fn run_with_base(t: HeadTensors, repo: &str, revision: &str) -> Result<(), Incompat> {
+        check_pointer(
+            &head(),
+            &Fixed(t),
+            Path::new("x"),
+            Some(2.351),
+            Some((repo, revision)),
+        )
     }
 
     #[test]
@@ -152,7 +209,16 @@ mod tests {
         extra.tensors.push(("evil".into(), vec![1], vec![0.0]));
         let mut wrong_d = good();
         wrong_d.d_model = Some(8);
+        let mut wrong_dim = good();
+        wrong_dim.head_dim = Some(256);
+        let mut no_temperature = good();
+        no_temperature.temperature = None;
+        let mut bad_temperature = good();
+        bad_temperature.temperature = Some(-1.0);
         for (case, t, declared) in [
+            ("head_dim", wrong_dim, None),
+            ("temperature missing", no_temperature, Some(2.351)),
+            ("temperature not positive", bad_temperature, None),
             ("missing", missing, None),
             ("shape", shape, None),
             ("non-finite", nan, None),
@@ -165,5 +231,32 @@ mod tests {
                 "{case}"
             );
         }
+    }
+
+    #[test]
+    fn the_base_the_file_names_must_be_the_one_of_the_source() {
+        let rev = "a".repeat(40);
+        assert_eq!(run_with_base(good(), "Org/Base", &rev), Ok(()));
+        for (case, t, repo, revision) in [
+            ("other repo", good(), "Org/Other", rev.as_str()),
+            (
+                "other revision",
+                good(),
+                "Org/Base",
+                "b".repeat(40).leak() as &str,
+            ),
+        ] {
+            let Err(Incompat::HeadWeights { detail }) = run_with_base(t, repo, revision) else {
+                panic!("{case}: accepted")
+            };
+            assert!(detail.contains("base"), "{case}: {detail}");
+        }
+        let mut none = good();
+        none.base = None;
+        none.base_revision = None;
+        let Err(Incompat::HeadWeights { detail }) = run_with_base(none, "Org/Base", &rev) else {
+            panic!("a file that does not say its base was accepted")
+        };
+        assert!(detail.contains("nothing"), "{detail}");
     }
 }

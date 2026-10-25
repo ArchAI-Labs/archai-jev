@@ -338,10 +338,41 @@ fn reject_template_mismatch() {
 }
 
 #[test]
-fn reject_dtype_without_tolerance() {
-    let i = rejects(Builder::tiny().dtype("q4_k_m"));
+fn reject_unknown_or_mistyped_selfcheck_reference() {
+    for value in [s("bogus"), s("Engine"), s(""), n(1), b(true), Json::Null] {
+        let i = rejects(Builder::tiny().set("variants.0.selfcheck.reference", value));
+        assert!(
+            matches!(i, Incompat::ManifestBadValue { ref path, .. } if path == "variants[0].selfcheck.reference"),
+            "{i}"
+        );
+    }
+}
+
+#[test]
+fn reject_reference_without_a_tolerance_row() {
+    // the row of the full-precision rule does not answer for the engine-recorded rule
+    let i = rejects(Builder::tiny().set("variants.0.selfcheck.reference", s("engine")));
     assert!(
-        matches!(i, Incompat::NoTolerance { ref dtype, .. } if dtype == "q4_k_m"),
+        matches!(i, Incompat::NoTolerance { ref dtype, reference, .. } if dtype == "q8_0" && reference == "engine"),
+        "{i}"
+    );
+    has(&i, "reference 'engine'");
+}
+
+#[test]
+fn reference_full_precision_is_the_same_as_leaving_it_out() {
+    let h = Harness::new();
+    let explicit = Builder::tiny()
+        .set("variants.0.selfcheck.reference", s("full_precision"))
+        .build();
+    h.load(&h.local(explicit.path())).unwrap();
+}
+
+#[test]
+fn reject_dtype_without_tolerance() {
+    let i = rejects(Builder::tiny().dtype("q2_k"));
+    assert!(
+        matches!(i, Incompat::NoTolerance { ref dtype, .. } if dtype == "q2_k"),
         "{i}"
     );
     has(&i, "tolerances are in the library");
@@ -349,11 +380,13 @@ fn reject_dtype_without_tolerance() {
 
 #[test]
 fn reject_source_without_converter() {
-    for kind in ["hf-lora", "hf-full"] {
-        let i = rejects(Builder::tiny().set("variants.0.source", obj(vec![("kind", s(kind))])));
-        assert!(matches!(i, Incompat::SourceWithoutConverter { .. }), "{i}");
-        has(&i, kind);
-    }
+    let i = rejects(Builder::tiny().hf_lora());
+    assert!(matches!(i, Incompat::SourceWithoutConverter { .. }), "{i}");
+    has(&i, "hf-lora");
+    // `hf-full` is reserved: refused even when a converter exists
+    let i = rejects(Builder::tiny().set("variants.0.source", obj(vec![("kind", s("hf-full"))])));
+    assert!(matches!(i, Incompat::SourceWithoutConverter { .. }), "{i}");
+    has(&i, "hf-full");
 }
 
 #[test]
@@ -713,6 +746,32 @@ fn reject_tensor_type() {
     // a vector that is not F32
     let i = rejects(Builder::tiny().set_tensor_type("output_norm.weight", 1));
     has(&i, "F32");
+}
+
+#[test]
+fn reject_a_k_quant_tensor_in_a_q8_0_file() {
+    // spec 009 AC-11: the file claims q8_0 but one matrix is Q4_K (type 12); the message names
+    // the tensor, what was expected and what was found
+    let i = rejects(Builder::tiny().set_tensor_type("blk.0.attn_q.weight", 12));
+    assert!(
+        matches!(i, Incompat::TensorType { ref name, .. } if name == "blk.0.attn_q.weight"),
+        "{i}"
+    );
+    has(&i, "expected Q8_0");
+    has(&i, "Q4_K");
+}
+
+#[test]
+fn reject_a_file_of_one_dtype_labelled_as_another() {
+    // every matrix is bfloat16 (type 30) but the manifest says q8_0
+    let i = rejects(Builder::tiny().edit_tensors(|tensors| {
+        for t in tensors.iter_mut().filter(|t| t.dims.len() == 2) {
+            t.ty = 30;
+        }
+    }));
+    assert!(matches!(i, Incompat::TensorType { .. }), "{i}");
+    has(&i, "Q8_0");
+    has(&i, "BF16");
 }
 
 // ---- stage 5: tokenizer --------------------------------------------------------------------

@@ -279,8 +279,7 @@ mod tests {
                 ("k.weight".into(), vec![2, 3], vec![0.0; 6]),
                 ("k.bias".into(), vec![2], vec![0.0; 2]),
             ],
-            temperature: None,
-            d_model: None,
+            ..HeadTensors::default()
         };
         assert!(PointerHead::from_tensors(&t, 3, 2).is_ok());
         assert!(PointerHead::from_tensors(&t, 4, 2).is_err());

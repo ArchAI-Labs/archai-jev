@@ -14,7 +14,7 @@
 )]
 
 use _core::calibration::calibrated_softmax;
-use _core::engine::llama::{LlamaConfig, LlamaForward};
+use _core::engine::llama::{LlamaConfig, LlamaForward, cpu_plan};
 use _core::engine::{Forward, Output, OutputSpec};
 use _core::json_strict::{Json, parse};
 use _core::models::testing::assets;
@@ -110,6 +110,7 @@ fn the_declared_temperature_is_reproduced_by_our_engine() {
             threads,
             max_context: 512,
             hidden_states: false,
+            plan: cpu_plan().unwrap(),
         },
     )
     .unwrap();

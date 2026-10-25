@@ -2,6 +2,9 @@
 
 use std::fmt;
 
+use crate::calibration::problem::{NoCalibration, RowsProblem};
+use crate::engine::device::Refusal;
+use crate::evaluation::problem::{ArgumentProblem, DatasetProblem};
 use crate::models::failures::{ArgFailure, DownloadFailure, VerifyFailure};
 use crate::models::incompat::Incompat;
 use crate::prompt::Unsupported;
@@ -23,6 +26,29 @@ pub enum Error {
     /// The softmax temperature was not a finite number greater than zero.
     #[error("temperature must be a finite number > 0, got {0}")]
     InvalidTemperature(f64),
+
+    // ---- Calibration functions (spec 004) ----
+    /// The rows, labels or options of a calibration function are not valid.
+    #[error("{0}")]
+    Rows(RowsProblem),
+
+    /// The data are valid but do not determine a calibration.
+    #[error("{0}")]
+    NoCalibration(NoCalibration),
+
+    // ---- Evaluation (spec 017) ----
+    /// An argument of an evaluation function is outside its range.
+    #[error("{0}")]
+    EvalArgument(ArgumentProblem),
+
+    /// A dataset that cannot be used.
+    #[error("{0}")]
+    Dataset(DatasetProblem),
+
+    /// An error of a part of a dataset, with where it was found (`file:line` or `record n`).
+    /// Its category is that of the error inside.
+    #[error("{place}: {source}")]
+    At { place: String, source: Box<Error> },
 
     // ---- State (category S) ----
     /// The state root is null, a number or a boolean.
@@ -212,6 +238,11 @@ pub enum Error {
     #[error("the inference engine failed: {detail}")]
     Inference { detail: String },
 
+    /// A device asked for by name cannot be used: the build lacks the backend, or the machine has
+    /// no such device (spec 011, section 2).
+    #[error("{0}")]
+    DeviceUnavailable(Refusal),
+
     /// The scorer returned the wrong number of logits.
     #[error("{0}")]
     ScorerOutputShape(ShapeProblem),
@@ -398,6 +429,8 @@ pub enum Category {
     Unsupported,
     /// `InferenceError`.
     Inference,
+    /// `DeviceUnavailableError`.
+    DeviceUnavailable,
     /// `IncompatibleModelError`.
     Incompatible,
     /// `ModelVerificationError`.
@@ -412,15 +445,35 @@ pub enum Category {
     Cancelled,
     /// `NotImplementedError`.
     NotImplemented,
+    /// `CalibrationError`: valid data that do not determine a calibration.
+    Calibration,
+    /// `InvalidDatasetError`.
+    Dataset,
 }
 
 impl Error {
+    /// `source` with where it was found (`file:line` or `record n`). A request to stop passes
+    /// through unchanged: it is not an error of the record.
+    pub fn at(place: &str, source: Error) -> Error {
+        match source {
+            Error::Cancelled => Error::Cancelled,
+            other => Error::At {
+                place: place.to_string(),
+                source: Box::new(other),
+            },
+        }
+    }
+
     /// The exception family of this error. Exhaustive on purpose: a new variant must choose one.
     pub fn category(&self) -> Category {
         match self {
             Error::Empty { .. } | Error::NonFinite { .. } | Error::InvalidTemperature(_) => {
                 Category::Value
             }
+            Error::Rows(_) | Error::EvalArgument(_) => Category::Argument,
+            Error::NoCalibration(_) => Category::Calibration,
+            Error::Dataset(_) => Category::Dataset,
+            Error::At { source, .. } => source.category(),
             Error::StateType { .. }
             | Error::StateTooDeep { .. }
             | Error::StateTooLarge
@@ -449,6 +502,7 @@ impl Error {
             Error::ModelArgument(ArgFailure::PathNotFound { .. }) => Category::PathNotFound,
             Error::ModelArgument(_) => Category::Argument,
             Error::Inference { .. } => Category::Inference,
+            Error::DeviceUnavailable(_) => Category::DeviceUnavailable,
             Error::NonFiniteLogit { .. }
             | Error::NonFiniteHidden { .. }
             | Error::ScorerOutputShape(_)

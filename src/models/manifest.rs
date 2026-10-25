@@ -4,8 +4,9 @@
 //! fields, types, domains of values). What the declarations mean (family, tolerances,
 //! calibration, tasks) is checked in `validate` (stage 2).
 
-use super::files::{FileEntry, is_commit};
+use super::files::{FileEntry, is_commit, is_repo_id};
 use super::incompat::Incompat;
+use super::tolerance::Reference;
 use super::vectors::{Vector, parse_vectors};
 use crate::json_strict::{self, FieldProblem, Json, Obj};
 
@@ -37,6 +38,9 @@ pub struct TokenizerSpec {
     pub file: FileEntry,
     /// Role (as named by the template) to token.
     pub special_tokens: Vec<(String, SpecialToken)>,
+    /// Every token of the tokenizer that the text of a request must not be able to produce
+    /// (`control_tokens`, only for heads whose template neutralises them).
+    pub control_tokens: Vec<String>,
 }
 
 /// One answer letter or word and its token id.
@@ -60,6 +64,27 @@ pub enum HeadSpec {
         /// `(no, yes)` targets for YesNo, if supported.
         yes_no: Option<(Target, Target)>,
     },
+    /// Score each option by the log-probabilities of its key (spec 010).
+    KeyLogProb {
+        /// Only `sum_logprob_full_vocab` exists: the sum over the key tokens of their
+        /// log-probability normalised over the whole vocabulary.
+        rule: String,
+        /// The most options of a question.
+        max_options: u64,
+        /// The most tokens of an option key.
+        max_key_tokens: u64,
+    },
+    /// Read the logits of the letters `A`, `B`, ... at the last position (spec 010b): restricted
+    /// softmax over the letters of the question. The model sees only the letter and a
+    /// description, so the targets are positional.
+    AnswerLetters {
+        /// Only `restricted_softmax` exists.
+        rule: String,
+        /// The letters `A`, `B`, ... in order, with their token ids.
+        letters: Vec<Target>,
+        /// The most options of a question (at most `letters.len()`).
+        max_options: u64,
+    },
     /// Kev's pointer head: two projections and a dot product.
     Pointer {
         /// Hidden size of the backbone.
@@ -72,10 +97,31 @@ pub enum HeadSpec {
 }
 
 impl HeadSpec {
+    /// The most options of a question the head answers, if it has a limit of its own: the number
+    /// of answer letters, or the declared `max_options`. A pointer head has none.
+    pub fn max_options(&self) -> Option<u64> {
+        match self {
+            HeadSpec::Letters { choice_targets, .. } => Some(choice_targets.len() as u64),
+            HeadSpec::KeyLogProb { max_options, .. }
+            | HeadSpec::AnswerLetters { max_options, .. } => Some(*max_options),
+            HeadSpec::Pointer { .. } => None,
+        }
+    }
+
+    /// The most tokens of an option key, for a head that scores keys.
+    pub fn max_key_tokens(&self) -> Option<u64> {
+        match self {
+            HeadSpec::KeyLogProb { max_key_tokens, .. } => Some(*max_key_tokens),
+            _ => None,
+        }
+    }
+
     /// The kind name used in manifests.
     pub fn kind(&self) -> &'static str {
         match self {
             HeadSpec::Letters { .. } => "letters",
+            HeadSpec::KeyLogProb { .. } => "key_logprob",
+            HeadSpec::AnswerLetters { .. } => "answer_letters",
             HeadSpec::Pointer { .. } => "pointer",
         }
     }
@@ -112,6 +158,56 @@ pub struct Task {
     pub matching: Json,
 }
 
+/// The original files of the base model of an `hf-lora` source.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BaseFiles {
+    /// Repository the base model comes from, e.g. `Qwen/Qwen3.5-0.8B-Base`.
+    pub repo: String,
+    /// Full commit hash of that repository.
+    pub revision: String,
+    /// `config.json`.
+    pub config: FileEntry,
+    /// The weights, one `.safetensors` file (sharded checkpoints are not supported).
+    pub weights: FileEntry,
+    /// `tokenizer.json` (its vocabulary goes into the GGUF; the prompt uses the manifest's one).
+    pub tokenizer: FileEntry,
+    /// `tokenizer_config.json` (added tokens and special token names).
+    pub tokenizer_config: FileEntry,
+}
+
+/// The LoRA adapter of an `hf-lora` source.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdapterFiles {
+    /// `adapter_config.json`.
+    pub config: FileEntry,
+    /// `adapter_model.safetensors`.
+    pub weights: FileEntry,
+}
+
+/// A checkpoint made of a base model and a LoRA adapter, converted to GGUF by the library
+/// (spec 018).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HfLoraSource {
+    /// The base model files.
+    pub base: BaseFiles,
+    /// The adapter files.
+    pub adapter: AdapterFiles,
+}
+
+impl HfLoraSource {
+    /// Every file of the source, in a fixed order.
+    pub fn files(&self) -> [&FileEntry; 6] {
+        [
+            &self.base.config,
+            &self.base.weights,
+            &self.base.tokenizer,
+            &self.base.tokenizer_config,
+            &self.adapter.config,
+            &self.adapter.weights,
+        ]
+    }
+}
+
 /// Where the weights of a variant come from.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Source {
@@ -120,9 +216,11 @@ pub enum Source {
         /// The GGUF.
         file: FileEntry,
     },
-    /// Reserved for the converter (018): kind and raw fields.
+    /// Original files converted into a GGUF at first use: a base model plus a LoRA adapter.
+    HfLora(Box<HfLoraSource>),
+    /// A kind that is reserved but not supported yet (`hf-full`): always refused.
     Reserved {
-        /// `hf-lora` or `hf-full`.
+        /// The kind.
         kind: String,
         /// The fields, unchecked.
         raw: Json,
@@ -151,6 +249,8 @@ pub struct Variant {
     pub calibration: CalibrationDecl,
     /// Self-check vectors.
     pub vectors: Vec<Vector>,
+    /// Where the expected numbers of the vectors come from (`selfcheck.reference`).
+    pub reference: Reference,
 }
 
 /// The `architecture` object: a name and free-form structural parameters whose allowed
@@ -256,6 +356,66 @@ fn target(json: &Json, path: &str) -> Result<Target, Incompat> {
     Ok(Target { label, id })
 }
 
+/// The letters of an `answer_letters` head are `A`, `B`, ... in order: the option at position
+/// *i* of a question reads the *i*-th letter, so a letter out of place would read another answer.
+fn parse_answer_letters(h: &mut Obj<'_>) -> Result<HeadSpec, Incompat> {
+    let rule = h.str("rule")?.to_string();
+    if rule != "restricted_softmax" {
+        return Err(bad(
+            &h.child_path("rule"),
+            format!("must be \"restricted_softmax\", got {rule:?}"),
+        ));
+    }
+    let base = h.child_path("letters");
+    let arr = h.arr("letters")?;
+    if !(1..=26).contains(&arr.len()) {
+        return Err(bad(
+            &base,
+            format!("must have from 1 to 26 letters, got {}", arr.len()),
+        ));
+    }
+    let mut letters = Vec::with_capacity(arr.len());
+    for (i, t) in arr.iter().enumerate() {
+        let path = format!("{base}[{i}]");
+        let letter = target(t, &path)?;
+        let want = char::from(b'A' + u8::try_from(i).unwrap_or(0)).to_string();
+        if letter.label != want {
+            return Err(bad(
+                &format!("{path}.label"),
+                format!(
+                    "must be {want:?} (the letters go from A in order), got {:?}",
+                    letter.label
+                ),
+            ));
+        }
+        if let Some(other) = letters.iter().find(|o: &&Target| o.id == letter.id) {
+            return Err(bad(
+                &format!("{path}.id"),
+                format!(
+                    "the id {} is already the one of {:?}",
+                    letter.id, other.label
+                ),
+            ));
+        }
+        letters.push(letter);
+    }
+    let max_options = h.u64("max_options")?;
+    if !(1..=letters.len() as u64).contains(&max_options) {
+        return Err(bad(
+            &h.child_path("max_options"),
+            format!(
+                "must be from 1 to the number of letters ({}), got {max_options}",
+                letters.len()
+            ),
+        ));
+    }
+    Ok(HeadSpec::AnswerLetters {
+        rule,
+        letters,
+        max_options,
+    })
+}
+
 fn parse_head(o: &mut Obj<'_>, family: &str, registry: bool) -> Result<HeadSpec, Incompat> {
     let mut h = o.obj("head")?;
     let kind = h.str("kind")?;
@@ -298,6 +458,35 @@ fn parse_head(o: &mut Obj<'_>, family: &str, registry: bool) -> Result<HeadSpec,
                 yes_no,
             }
         }
+        "key_logprob" => {
+            let rule = h.str("rule")?.to_string();
+            if rule != "sum_logprob_full_vocab" {
+                return Err(bad(
+                    &h.child_path("rule"),
+                    format!("must be \"sum_logprob_full_vocab\", got {rule:?}"),
+                ));
+            }
+            let max_options = h.u64("max_options")?;
+            if !(1..=255).contains(&max_options) {
+                return Err(bad(
+                    &h.child_path("max_options"),
+                    format!("must be from 1 to 255, got {max_options}"),
+                ));
+            }
+            let max_key_tokens = h.u64("max_key_tokens")?;
+            if !(1..=64).contains(&max_key_tokens) {
+                return Err(bad(
+                    &h.child_path("max_key_tokens"),
+                    format!("must be from 1 to 64, got {max_key_tokens}"),
+                ));
+            }
+            HeadSpec::KeyLogProb {
+                rule,
+                max_options,
+                max_key_tokens,
+            }
+        }
+        "answer_letters" => parse_answer_letters(&mut h)?,
         "pointer" => {
             let d_model = h.u64("d_model")?;
             let proj_dim = h.u64("proj_dim")?;
@@ -312,7 +501,7 @@ fn parse_head(o: &mut Obj<'_>, family: &str, registry: bool) -> Result<HeadSpec,
         other => {
             return Err(Incompat::HeadMismatch {
                 family: family.to_string(),
-                expected: "one of: letters, pointer".to_string(),
+                expected: "one of: letters, key_logprob, answer_letters, pointer".to_string(),
                 got: other.to_string(),
             });
         }
@@ -330,7 +519,8 @@ fn parse_source(v: &Json, path: &str, registry: bool) -> Result<Source, Incompat
             s.finish()?;
             Ok(Source::Gguf { file })
         }
-        "hf-lora" | "hf-full" => Ok(Source::Reserved {
+        "hf-lora" => parse_hf_lora(s, registry),
+        "hf-full" => Ok(Source::Reserved {
             kind: kind.to_string(),
             raw: v.clone(),
         }),
@@ -339,6 +529,82 @@ fn parse_source(v: &Json, path: &str, registry: bool) -> Result<Source, Incompat
             format!("must be \"gguf\", \"hf-lora\" or \"hf-full\", got {other:?}"),
         )),
     }
+}
+
+fn parse_hf_lora(mut s: Obj<'_>, registry: bool) -> Result<Source, Incompat> {
+    let file = |o: &mut Obj<'_>, key: &str| -> Result<FileEntry, Incompat> {
+        FileEntry::from_json(o.req(key)?, &o.child_path(key), registry)
+    };
+    let mut b = s.obj("base")?;
+    let repo = b.str("repo")?.to_string();
+    if !is_repo_id(&repo) {
+        return Err(bad(
+            &b.child_path("repo"),
+            format!("is not a repository id: {repo:?}"),
+        ));
+    }
+    let revision = b.str("revision")?.to_string();
+    if !is_commit(&revision) {
+        return Err(bad(
+            &b.child_path("revision"),
+            format!("must be a full 40-digit commit hash, got {revision:?}"),
+        ));
+    }
+    let config = file(&mut b, "config")?;
+    let weights_path = b.child_path("weights");
+    let weights_list = b.arr("weights")?;
+    let [only] = weights_list else {
+        return Err(bad(
+            &weights_path,
+            format!(
+                "must list exactly one safetensors file, got {} (sharded checkpoints are not supported)",
+                weights_list.len()
+            ),
+        ));
+    };
+    let weights = FileEntry::from_json(only, &format!("{weights_path}[0]"), registry)?;
+    let tokenizer = file(&mut b, "tokenizer")?;
+    let tokenizer_config = file(&mut b, "tokenizer_config")?;
+    let base_path = b.path().to_string();
+    b.finish()?;
+    if registry {
+        for (name, f) in [
+            ("config", &config),
+            ("weights[0]", &weights),
+            ("tokenizer", &tokenizer),
+            ("tokenizer_config", &tokenizer_config),
+        ] {
+            if let Some(o) = &f.origin
+                && (o.repo != repo || o.revision != revision)
+            {
+                return Err(bad(
+                    &format!("{base_path}.{name}.origin"),
+                    format!(
+                        "is {}@{}, but base.repo and base.revision say {repo}@{revision}",
+                        o.repo, o.revision
+                    ),
+                ));
+            }
+        }
+    }
+    let mut a = s.obj("adapter")?;
+    let adapter = AdapterFiles {
+        config: file(&mut a, "config")?,
+        weights: file(&mut a, "weights")?,
+    };
+    a.finish()?;
+    s.finish()?;
+    Ok(Source::HfLora(Box::new(HfLoraSource {
+        base: BaseFiles {
+            repo,
+            revision,
+            config,
+            weights,
+            tokenizer,
+            tokenizer_config,
+        },
+        adapter,
+    })))
 }
 
 fn parse_calibration(v: &Json, path: &str) -> Result<CalibrationDecl, Incompat> {
@@ -402,6 +668,21 @@ fn parse_variants(o: &mut Obj<'_>, registry: bool) -> Result<Vec<Variant>, Incom
         let calibration = parse_calibration(v.req("calibration")?, &format!("{vp}.calibration"))?;
         let mut sc = v.obj("selfcheck")?;
         let vectors = parse_vectors(sc.arr("vectors")?, &format!("{vp}.selfcheck.vectors"))?;
+        let reference = match sc.opt("reference") {
+            None => Reference::default(),
+            Some(Json::Str(name)) => Reference::parse(name).ok_or_else(|| {
+                bad(
+                    &format!("{vp}.selfcheck.reference"),
+                    format!("must be \"full_precision\" or \"engine\", got {name:?}"),
+                )
+            })?,
+            Some(other) => {
+                return Err(bad(
+                    &format!("{vp}.selfcheck.reference"),
+                    format!("must be a string, got {}", other.kind()),
+                ));
+            }
+        };
         sc.finish()?;
         v.finish()?;
         out.push(Variant {
@@ -409,7 +690,42 @@ fn parse_variants(o: &mut Obj<'_>, registry: bool) -> Result<Vec<Variant>, Incom
             source,
             calibration,
             vectors,
+            reference,
         });
+    }
+    Ok(out)
+}
+
+/// `tokenizer.control_tokens`: absent means none; otherwise distinct, non-empty strings.
+fn parse_control_tokens(tk: &mut Obj<'_>) -> Result<Vec<String>, Incompat> {
+    let path = tk.child_path("control_tokens");
+    let Some(value) = tk.opt("control_tokens") else {
+        return Ok(Vec::new());
+    };
+    let Json::Array(items) = value else {
+        return Err(bad(
+            &path,
+            format!("must be an array of strings, got {}", value.kind()),
+        ));
+    };
+    let mut out: Vec<String> = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let Json::Str(text) = item else {
+            return Err(bad(
+                &format!("{path}[{i}]"),
+                format!("must be a string, got {}", item.kind()),
+            ));
+        };
+        if let Some(why) = crate::prompt::sanitize::control_token_problem(text) {
+            return Err(bad(&format!("{path}[{i}]"), format!("{text:?} {why}")));
+        }
+        if out.contains(text) {
+            return Err(bad(
+                &format!("{path}[{i}]"),
+                format!("{text:?} appears twice"),
+            ));
+        }
+        out.push(text.clone());
     }
     Ok(out)
 }
@@ -535,10 +851,12 @@ impl Manifest {
             to.finish()?;
             special_tokens.push((role.clone(), SpecialToken { text, id }));
         }
+        let control_tokens = parse_control_tokens(&mut tk)?;
         tk.finish()?;
         let tokenizer = TokenizerSpec {
             file,
             special_tokens,
+            control_tokens,
         };
 
         let max_context = o.u64("max_context")?;

@@ -7,8 +7,12 @@ Errors in how the API is *used* (wrong argument types) are plain ``TypeError``/`
 from __future__ import annotations
 
 __all__ = [
+    "CalibrationError",
+    "DeviceFallbackWarning",
+    "DeviceUnavailableError",
     "IncompatibleModelError",
     "InferenceError",
+    "InvalidDatasetError",
     "InvalidQuestionError",
     "InvalidStateError",
     "JevError",
@@ -17,6 +21,11 @@ __all__ = [
     "NumericalError",
     "UnsupportedRequestError",
 ]
+
+
+class _StoppedError(Exception):
+    """Private: a call stopped by its token (the cancellation of ``aask``). The async methods
+    turn it into ``asyncio.CancelledError``; it never reaches a user."""
 
 
 class JevError(Exception):
@@ -56,10 +65,44 @@ class NumericalError(JevError, RuntimeError):
     not a valid distribution. No result is returned."""
 
 
+class CalibrationError(JevError, ValueError):
+    """The data are valid but do not determine a calibration, so none is returned.
+
+    Raised by :func:`archai_jev.fit_temperature` when the best temperature is not inside
+    ``bounds``: every row is uniform, the labels always match the top option, or the logits
+    carry no usable information about the labels. Using a temperature at the edge would make
+    the probabilities look calibrated without any basis, so the function refuses.
+    """
+
+
+class InvalidDatasetError(JevError, ValueError):
+    """A labelled dataset cannot be used: an empty file, a line that is not valid JSON, fields the
+    format does not have, a label that does not fit its question, or one question name with two
+    types. The message names the file and line (``data.jsonl:41``) or the record (``record 3``).
+    Nothing is skipped and no partial dataset is returned.
+    """
+
+
 class InferenceError(JevError, RuntimeError):
     """The inference engine could not run: a decoding error, not enough memory for the context,
     or a CPU without the instructions the engine needs (AVX2, FMA, F16C, BMI2). No result is
     returned and the model stays usable for the next request."""
+
+
+class DeviceUnavailableError(JevError, RuntimeError):
+    """A device named in ``device=`` cannot be used: this build of archai_jev was compiled without
+    that backend (the wheels on PyPI are CPU-only), or the machine has no such device (a missing
+    driver, a virtual machine, a wrong index). ``device="cpu"`` and ``device="auto"`` never raise
+    it. The message lists what the build contains."""
+
+
+class DeviceFallbackWarning(UserWarning):
+    """``device="auto"`` used the CPU although a GPU backend is compiled in, because the device
+    was missing, had no verified tolerance for the model, or could not run it (for example not
+    enough memory). The message says why and ``Jev.model_info.device`` is ``"cpu"``. Nothing is
+    wrong with the answers: they are the CPU's. A GPU whose numbers fail the self-check is never
+    replaced by the CPU: that is :class:`ModelVerificationError`. Not emitted by a build with no
+    GPU backend, where there was nothing to fall back from."""
 
 
 class ModelDownloadError(JevError, OSError):
@@ -69,14 +112,18 @@ class ModelDownloadError(JevError, OSError):
 
 for _cls in (
     JevError,
+    CalibrationError,
+    InvalidDatasetError,
     InvalidStateError,
     InvalidQuestionError,
     UnsupportedRequestError,
     IncompatibleModelError,
     InferenceError,
+    DeviceUnavailableError,
     ModelVerificationError,
     NumericalError,
     ModelDownloadError,
+    DeviceFallbackWarning,
 ):
     _cls.__module__ = "archai_jev"
 del _cls

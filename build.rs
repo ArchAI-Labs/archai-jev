@@ -5,6 +5,10 @@
 use std::fs;
 use std::path::Path;
 
+// The guard of the `metal` feature is shared with the library, which tests it.
+#[path = "src/engine/build_guard.rs"]
+mod build_guard;
+
 fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     for entry in rd.flatten() {
@@ -20,6 +24,8 @@ fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
 fn main() {
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=GGML_METAL");
+    refuse_a_metal_build_without_metal();
     let mut files = Vec::new();
     walk(Path::new("src"), &mut files);
     files.sort();
@@ -38,6 +44,18 @@ fn main() {
     }
     println!("cargo:rustc-env=ARCHAI_JEV_BUILD_ID={h:016x}");
     link_clang_runtime_on_macos();
+}
+
+/// The `metal` feature is accepted by Cargo on every platform and `.cargo/config.toml` switches
+/// Metal off: stop the build rather than produce a binary that says `metal` and contains none.
+fn refuse_a_metal_build_without_metal() {
+    let feature = std::env::var_os("CARGO_FEATURE_METAL").is_some();
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let ggml_metal = std::env::var("GGML_METAL").ok();
+    if let Err(message) = build_guard::check(feature, &target_os, ggml_metal.as_deref()) {
+        eprintln!("error: {message}");
+        std::process::exit(1);
+    }
 }
 
 /// macOS only. ggml's C++ uses `__builtin_available`, which clang lowers to a call into compiler-rt

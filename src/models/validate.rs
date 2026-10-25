@@ -1,12 +1,14 @@
 //! Fail-closed validation (D20, level 1): what the manifest declares (stage 2) and whether a
 //! GGUF file matches it (stage 4). Each failure is one [`Incompat`] reason.
 
-use super::families::{self, ArchParams, Family, MetaExpect, Role};
-use super::gguf::{GgmlType, GgufInfo, MetaValue};
+use super::families::{self, ArchParams, Family, MetaExpect};
+use super::gguf::{GgufInfo, MetaValue};
 use super::incompat::Incompat;
 use super::manifest::{CalibrationDecl, HeadSpec, Manifest, Source, Variant};
+use super::recipes;
 use super::tolerance;
 use super::vectors::check_vectors;
+use crate::engine::device::BackendKind;
 
 /// The family and architecture parameters a manifest resolved to.
 #[derive(Clone)]
@@ -75,16 +77,23 @@ fn check_variant(
     n_vocab: u64,
     converter_kinds: &[String],
 ) -> Result<(), Incompat> {
-    if tolerance::lookup(family.key, &v.dtype).is_none() {
+    if tolerance::lookup(family.key, &v.dtype, v.reference, BackendKind::Cpu).is_none() {
         return Err(Incompat::NoTolerance {
             family: family.key.to_string(),
             dtype: v.dtype.clone(),
+            reference: v.reference.name(),
         });
     }
-    if let Source::Reserved { kind, .. } = &v.source
-        && !converter_kinds.contains(kind)
-    {
-        return Err(Incompat::SourceWithoutConverter { kind: kind.clone() });
+    match &v.source {
+        Source::Reserved { kind, .. } => {
+            return Err(Incompat::SourceWithoutConverter { kind: kind.clone() });
+        }
+        Source::HfLora(_) if !converter_kinds.iter().any(|k| k == "hf-lora") => {
+            return Err(Incompat::SourceWithoutConverter {
+                kind: "hf-lora".to_string(),
+            });
+        }
+        Source::HfLora(_) | Source::Gguf { .. } => {}
     }
     for kind in tasks_kinds(m, family) {
         if !v
@@ -100,6 +109,36 @@ fn check_variant(
     }
     check_vectors(&v.vectors, n_vocab)?;
     check_calibration(&v.calibration)
+}
+
+/// `tokenizer.control_tokens` and `notice` go with the heads whose template neutralises control
+/// tokens: required there (the list is what stops a request from forging the prompt structure,
+/// the notice is what tells the user the model is third-party and uncalibrated), and refused
+/// everywhere else (a list nobody applies would only look like protection).
+fn check_control_tokens(m: &Manifest, family: &Family) -> Result<(), Incompat> {
+    let listed = !m.tokenizer.control_tokens.is_empty();
+    if family.head_kind == "answer_letters" {
+        if !listed {
+            return Err(Incompat::ManifestMissingField {
+                path: "tokenizer.control_tokens".to_string(),
+            });
+        }
+        if m.notice.as_deref().is_none_or(|n| n.trim().is_empty()) {
+            return Err(Incompat::ManifestBadValue {
+                path: "notice".to_string(),
+                detail: format!(
+                    "the family {} needs a notice saying what the model is and is not",
+                    family.key
+                ),
+            });
+        }
+    } else if listed {
+        return Err(Incompat::ManifestBadValue {
+            path: "tokenizer.control_tokens".to_string(),
+            detail: format!("the family {} does not use control tokens", family.key),
+        });
+    }
+    Ok(())
 }
 
 fn check_tasks(m: &Manifest) -> Result<(), Incompat> {
@@ -170,6 +209,13 @@ pub fn semantics(m: &Manifest, converter_kinds: &[String]) -> Result<Resolved, I
         });
     }
     check_tasks(m)?;
+    check_control_tokens(m, family)?;
+    if matches!(family.head_kind, "key_logprob" | "answer_letters") && m.tasks.is_some() {
+        // the family answers any Choice/YesNo: a closed set of tasks has nothing to match
+        return Err(Incompat::TasksNotSupported {
+            family: family.key.to_string(),
+        });
+    }
     if family.head_kind == "pointer" {
         if m.tasks.is_some() {
             return Err(Incompat::TasksNotSupported {
@@ -238,6 +284,7 @@ pub fn gguf_vs_manifest(
         let ok = match (&expect, got) {
             (MetaExpect::Str(s), Some(MetaValue::Str(g))) => s == g,
             (MetaExpect::UInt(n), Some(g)) => as_uint(g) == Some(*n),
+            (MetaExpect::BoolArray(want), Some(MetaValue::BoolArray(g))) => want == g,
             _ => false,
         };
         if !ok {
@@ -246,6 +293,7 @@ pub fn gguf_vs_manifest(
                 expected: match expect {
                     MetaExpect::Str(s) => format!("{s:?}"),
                     MetaExpect::UInt(n) => n.to_string(),
+                    MetaExpect::BoolArray(v) => format!("{v:?}"),
                 },
                 got: describe(got),
             });
@@ -266,7 +314,6 @@ pub fn gguf_vs_manifest(
         });
     }
 
-    let matrix = families::matrix_type(dtype);
     let expected = (family.tensors)(&resolved.params);
     for spec in &expected {
         let Some(t) = info.tensor(&spec.name) else {
@@ -281,14 +328,11 @@ pub fn gguf_vs_manifest(
                 got: t.dims.clone(),
             });
         }
-        let want = match spec.role {
-            Role::Vector => Some(GgmlType::F32),
-            Role::Matrix => matrix,
-        };
-        if want != Some(t.ty) {
+        let allowed = recipes::allowed_types(dtype, spec.role);
+        if !allowed.is_some_and(|types| types.contains(&t.ty)) {
             return Err(Incompat::TensorType {
                 name: spec.name.clone(),
-                expected: want.map_or_else(|| "a supported type".to_string(), GgmlType::name),
+                expected: recipes::describe(allowed),
                 got: t.ty.name(),
             });
         }

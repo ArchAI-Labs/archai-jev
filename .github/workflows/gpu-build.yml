@@ -1,0 +1,410 @@
+# Builds with a GPU backend (spec 011, AC-10, AC-12 to AC-15). Separate from CI.yml and NOT run on every pull
+# request: a build with CUDA takes minutes and needs a toolkit.
+#
+# What it can and cannot prove. No hosted runner has a GPU, so these jobs prove that each backend COMPILES, that the
+# result IMPORTS and answers on a machine with no GPU or driver, that the CPU path still works in such a build
+# (the Metal build that hung for minutes on a VM is the fault this guards against), and, on Mesa's software GPU
+# (lavapipe) was meant to prove that a Vulkan build decodes on a non-CPU device, but ggml-vulkan ignores devices of
+# type CPU (the first run listed only `cpu`): no runner proves it; the real GPU of the development machine does. CUDA and Metal numbers on real hardware are
+# checked by hand (task T12 of the spec), on the development machine.
+#
+# Each job ends with a decode of the default model (Q8_0, cached after the first run): the CPU plan in every job, and
+# the named device where there is one. The toolkit installation steps cannot be tried locally; read the first run.
+name: GPU build
+
+# By hand only (Actions -> "GPU build" -> Run workflow). It used to run on every push to main and develop, on tags and
+# weekly; several jobs were still red (CUDA, Vulkan on Windows) and a red check on a tag next to a release is noise. The
+# release of CI.yml does not depend on this workflow.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Same pin as CI.yml.
+  RUST_VERSION: "1.99.1"
+  # The model of the decode (as default-selfcheck.yml): repository, revision and SHA-256 of the registry entry.
+  GGUF_URL: https://huggingface.co/nickprock/archai-jev-qwen-1.5b/resolve/7730248dc1b411f594ec88c657d26285decb3cb9/archai-jev-qwen1.5b-q8.gguf
+  GGUF_SHA256: 5dfad79eba479688fbd4bc5b43dd8279aeb5a49259f73a0a3f330b38790aa809
+  # Windows installers, taken from the vendors and signed by them; the SHA-256 is the one of the file this workflow
+  # was written against (Get-FileHash on 2026-10-22). The CUDA file is a network installer: it fetches the components.
+  CUDA_VERSION: "12.9.1"
+  CUDA_INSTALLER_URL: https://developer.download.nvidia.com/compute/cuda/12.9.1/network_installers/cuda_12.9.1_windows_network.exe
+  CUDA_INSTALLER_SHA256: de45c336ab4e9825018b546357dc9de5ded9f89c4f5200ef52b8eeac3b1b4072
+  VULKAN_SDK_VERSION: "1.4.363.0"
+  VULKAN_INSTALLER_URL: https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/vulkansdk-windows-X64-1.4.363.0.exe
+  VULKAN_INSTALLER_SHA256: 94a82d378f7a5e3e54c9db7d2fb7016af136e14ac0a18dbf0f2f67a36352d141
+
+jobs:
+  # ---- CUDA on Linux: the build in the toolkit image of NVIDIA, the runner has no driver ---------------------------
+  cuda-linux:
+    name: cuda-linux / ${{ matrix.feature }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container: nvidia/cuda:12.9.1-devel-ubuntu24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # `cuda` links the driver library (libcuda.so.1): on a runner with no driver the import is expected to FAIL
+        # (AC-14), which is why `cuda-no-vmm` exists. Its steps after the build may fail without failing the job.
+        feature: [cuda, cuda-no-vmm]
+    defaults:
+      run:
+        shell: bash
+    env:
+      # One architecture is enough to prove the build; the architectures of a published wheel are decided in T14.
+      CMAKE_CUDA_ARCHITECTURES: "120"
+      # The CUDA objects go into a shared library: without -fPIC the link fails with "relocation R_X86_64_PC32 cannot be
+      # used against symbol 'stderr'" (first run of this job).
+      CMAKE_CUDA_FLAGS: "-Xcompiler -fPIC"
+    steps:
+      - name: System packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git build-essential cmake clang libclang-dev pkg-config
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cuda-${{ matrix.feature }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+      - name: Install dev dependencies
+        run: uv sync --no-install-project
+      - name: Point PyO3 at the venv interpreter
+        run: echo "PYO3_PYTHON=$(uv run --no-sync python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+      - name: Build the extension with the feature
+        run: uv run --no-sync maturin develop --uv --features testing,${{ matrix.feature }}
+      - name: Import, devices and the paths without a GPU (no driver on this runner)
+        id: smoke
+        continue-on-error: ${{ matrix.feature == 'cuda' }}
+        run: uv run --no-sync python ci/gpu/smoke_devices.py --expect cpu,cuda --no-gpu
+      - name: Say what happened with the driver library
+        if: always()
+        run: |
+          {
+            echo "### cuda-linux / ${{ matrix.feature }}"
+            echo "- import and device smoke: \`${{ steps.smoke.outcome }}\` (\`cuda\` is expected to fail where there is no driver, \`cuda-no-vmm\` is not)"
+            echo "- libraries the extension needs:"
+            echo '```'
+            ldd python/archai_jev/_core*.so | grep -E "cuda|cublas|not found" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Device tests of the Python layer
+        if: matrix.feature == 'cuda-no-vmm'
+        run: uv run --no-sync pytest -ra --tb=short -p no:cacheprovider -k device
+      - name: Cache the model file
+        if: matrix.feature == 'cuda-no-vmm'
+        id: gguf
+        uses: actions/cache@v5
+        with:
+          path: model.gguf
+          key: q8_0-${{ env.GGUF_SHA256 }}
+      - name: Download the model file
+        if: matrix.feature == 'cuda-no-vmm' && steps.gguf.outputs.cache-hit != 'true'
+        run: curl -fL --retry 4 --retry-delay 10 -o model.gguf "$GGUF_URL"
+      - name: Decode with the CPU plan in a CUDA build
+        if: matrix.feature == 'cuda-no-vmm'
+        env:
+          ARCHAI_JEV_TEST_LIMIT_SECS: "180"
+        run: |
+          echo "$GGUF_SHA256  model.gguf" | sha256sum -c -
+          ARCHAI_JEV_TEST_V2_GGUF="$PWD/model.gguf" cargo test --release --features ${{ matrix.feature }} --test gpu_smoke -- --nocapture
+
+  # ---- CUDA on Windows: the installer of NVIDIA ------------------------------------------------------------------
+  cuda-windows:
+    name: cuda-windows / ${{ matrix.feature }}
+    # Not windows-latest: it has only Visual Studio 2026 (MSVC 14.51), and nvcc 12.9 crashes on it (cudafe++ dies with
+    # ACCESS_VIOLATION). Windows 2022 has Visual Studio 2022, the host compiler that CUDA 12.9 supports and the one of the
+    # development machine.
+    runs-on: windows-2022
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        feature: [cuda, cuda-no-vmm]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      # `-s` alone installs every component: the names of single components ("nvcc_12.9", "thrust_12.9", ...) made the
+      # installer exit with 0xE0E00019 on the first run (a name that does not exist in this release is an error).
+      - name: Install the CUDA Toolkit (checked against the SHA-256 above)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest $env:CUDA_INSTALLER_URL -OutFile cuda.exe -UseBasicParsing
+          $hash = (Get-FileHash cuda.exe -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:CUDA_INSTALLER_SHA256) { throw "cuda.exe has SHA-256 $hash, expected $env:CUDA_INSTALLER_SHA256" }
+          $p = Start-Process .\cuda.exe -ArgumentList "-s" -Wait -PassThru
+          "installer exit code: $($p.ExitCode)"
+          $root = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9"
+          if (-not (Test-Path "$root\bin\nvcc.exe")) {
+            Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit" -ErrorAction SilentlyContinue | Select-Object FullName
+            throw "nvcc.exe is not in $root\bin"
+          }
+          "CUDA_PATH=$root" >> $env:GITHUB_ENV
+          "CUDA_PATH_V12_9=$root" >> $env:GITHUB_ENV
+          "CMAKE_CUDA_ARCHITECTURES=120" >> $env:GITHUB_ENV
+          "$root\bin" >> $env:GITHUB_PATH
+      # The "Visual Studio" generator of CMake needs the CUDA integration for MSBuild, which the installer puts only in
+      # the Visual Studio versions it knows (the runner has a newer one: "No CUDA toolset found", first run of this
+      # job). Ninja with the MSVC environment needs no integration, as in the Vulkan job. Visual Studio 2022 if there is
+      # one (the host compiler that CUDA 12.9 supports); otherwise the newest one, with nvcc told to accept it.
+      - name: MSVC environment and Ninja
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -version "[17.0,18.0)" -property installationPath
+          if (-not $vs) {
+            $vs = & $vswhere -latest -property installationPath
+            "CMAKE_CUDA_FLAGS=-allow-unsupported-compiler" >> $env:GITHUB_ENV
+            "::warning::no Visual Studio 2022 on this runner: using $vs with -allow-unsupported-compiler"
+          }
+          cmd /c "`"$vs\Common7\Tools\VsDevCmd.bat`" -arch=x64 -host_arch=x64 >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$' -and $matches[1] -notin @('GITHUB_ENV', 'GITHUB_PATH')) { "$($matches[1])=$($matches[2])" >> $env:GITHUB_ENV }
+          }
+          "$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja" >> $env:GITHUB_PATH
+          "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
+      # Windows: the C++ object paths of llama.cpp are deep; a short target dir keeps MSBuild under MAX_PATH.
+      - name: Windows build environment
+        run: |
+          echo "CARGO_TARGET_DIR=C:\t" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cuda-windows-${{ matrix.feature }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+      - name: Install dev dependencies
+        run: uv sync --no-install-project
+      - name: Point PyO3 at the venv interpreter
+        run: echo "PYO3_PYTHON=$(uv run --no-sync python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+      - name: Build the extension with the feature
+        shell: pwsh
+        run: uv run --no-sync maturin develop --uv --features testing,${{ matrix.feature }}
+      - name: Import, devices and the paths without a GPU (no driver on this runner)
+        id: smoke
+        # `cuda` imports nvcuda.dll (the driver): where there is none the import fails, which is AC-14's reason to try
+        # `cuda-no-vmm`. The folder of cudart and cublas is given to Python by hand (it ignores PATH for DLLs).
+        continue-on-error: ${{ matrix.feature == 'cuda' }}
+        run: uv run --no-sync python ci/gpu/smoke_devices.py --expect cpu,cuda --no-gpu --dll-dir "$CUDA_PATH/bin"
+      - name: Say what happened with the driver library
+        if: always()
+        shell: pwsh
+        run: |
+          $pyd = Get-ChildItem python\archai_jev -Filter "_core*.pyd" | Select-Object -First 1
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'Hostx64.x64' } | Select-Object -First 1
+          $deps = if ($dumpbin) { & $dumpbin.FullName /dependents $pyd.FullName 2>&1 | Select-String "dll" } else { "dumpbin.exe not found" }
+          @(
+            "### cuda-windows / ${{ matrix.feature }}",
+            "- import and device smoke: ``${{ steps.smoke.outcome }}`` (``cuda`` is expected to fail where there is no driver, ``cuda-no-vmm`` is not)",
+            "- DLLs imported by the extension:",
+            '```', ($deps -join "`n"), '```'
+          ) | Out-File -Append $env:GITHUB_STEP_SUMMARY
+      - name: Device tests of the Python layer
+        if: matrix.feature == 'cuda-no-vmm'
+        # Python on Windows does not search PATH for DLLs: the folder of the runtime DLLs is given to it by hand
+        # (the extension would not import and pytest would stop at the collection of every file).
+        run: >-
+          uv run --no-sync python -c "import os, sys, pytest;
+          os.add_dll_directory(os.path.join(os.environ['CUDA_PATH'], 'bin'));
+          sys.exit(pytest.main(['-ra', '--tb=short', '-p', 'no:cacheprovider', '-k', 'device']))"
+
+  # ---- Vulkan on Linux: compile, import, and the CPU plan in a build with the Vulkan loader but no usable GPU ---------
+  vulkan-linux:
+    name: vulkan-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - name: System packages (loader, shader compiler, Mesa software GPU)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev pkg-config libvulkan-dev glslc spirv-headers mesa-vulkan-drivers vulkan-tools
+          vulkaninfo --summary || true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: vulkan-linux
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+      - name: Install dev dependencies
+        run: uv sync --no-install-project
+      - name: Point PyO3 at the venv interpreter
+        run: echo "PYO3_PYTHON=$(uv run --no-sync python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+      # The `metal` feature must not build anywhere but on macOS with GGML_METAL=ON (build.rs): it fails here, on purpose.
+      - name: The metal feature is refused on Linux
+        run: |
+          if cargo check --features metal > metal.log 2>&1; then echo "::error::--features metal built on Linux"; exit 1; fi
+          grep -q "needs a macOS target" metal.log || { cat metal.log; exit 1; }
+      - name: Build the extension with the feature
+        run: uv run --no-sync maturin develop --uv --features testing,vulkan
+      # Mesa's lavapipe (a software Vulkan device of type CPU) is installed, and ggml-vulkan skips it on purpose
+      # ("If only CPU devices are available, return without devices"): this runner has no Vulkan device for ggml.
+      - name: Import and devices (the loader is there, no device for ggml)
+        run: uv run --no-sync python ci/gpu/smoke_devices.py --expect cpu,vulkan --no-gpu
+      - name: Device tests of the Python layer
+        run: uv run --no-sync pytest -ra --tb=short -p no:cacheprovider -k device
+      - name: Cache the model file
+        id: gguf
+        uses: actions/cache@v5
+        with:
+          path: model.gguf
+          key: q8_0-${{ env.GGUF_SHA256 }}
+      - name: Download the model file
+        if: steps.gguf.outputs.cache-hit != 'true'
+        run: curl -fL --retry 4 --retry-delay 10 -o model.gguf "$GGUF_URL"
+      - name: Decode with the CPU plan in a Vulkan build
+        env:
+          ARCHAI_JEV_TEST_LIMIT_SECS: "180"
+        run: |
+          echo "$GGUF_SHA256  model.gguf" | sha256sum -c -
+          ARCHAI_JEV_TEST_V2_GGUF="$PWD/model.gguf" cargo test --release --features vulkan --test gpu_smoke -- --nocapture
+
+  # ---- Vulkan on Windows: the SDK of LunarG, with Ninja (the Visual Studio generator fails on this build) ----------
+  vulkan-windows:
+    name: vulkan-windows
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install the Vulkan SDK (checked against the SHA-256 above)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest $env:VULKAN_INSTALLER_URL -OutFile vulkansdk.exe -UseBasicParsing
+          $hash = (Get-FileHash vulkansdk.exe -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:VULKAN_INSTALLER_SHA256) { throw "vulkansdk.exe has SHA-256 $hash, expected $env:VULKAN_INSTALLER_SHA256" }
+          Start-Process .\vulkansdk.exe -ArgumentList "--accept-licenses","--default-answer","--confirm-command","install" -Wait
+          $sdk = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          if (-not (Test-Path "$sdk\Bin\glslc.exe")) { throw "glslc.exe is not in $sdk\Bin" }
+          "VULKAN_SDK=$sdk" >> $env:GITHUB_ENV
+          "$sdk\Bin" >> $env:GITHUB_PATH
+      # CMake needs Ninja and the MSVC environment together: take the variables of VsDevCmd into the job.
+      - name: MSVC environment and Ninja
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          cmd /c "`"$vs\Common7\Tools\VsDevCmd.bat`" -arch=x64 -host_arch=x64 >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$' -and $matches[1] -notin @('GITHUB_ENV', 'GITHUB_PATH')) { "$($matches[1])=$($matches[2])" >> $env:GITHUB_ENV }
+          }
+          "$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja" >> $env:GITHUB_PATH
+          "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
+      - name: Windows build environment
+        run: |
+          echo "CARGO_TARGET_DIR=C:\t" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: vulkan-windows
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+      - name: Install dev dependencies
+        run: uv sync --no-install-project
+      - name: Point PyO3 at the venv interpreter
+        run: echo "PYO3_PYTHON=$(uv run --no-sync python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+      # PowerShell, not bash: in Git's bash `link` is the coreutils program (Git\usr\bin\link.exe) and rustc takes it
+      # for the linker of MSVC (first run of this job).
+      - name: Build the extension with the feature
+        shell: pwsh
+        run: uv run --no-sync maturin develop --uv --features testing,vulkan
+      # The extension imports vulkan-1.dll (the loader): the SDK's folder is given to Python by hand. Without it, or on
+      # a machine with no loader, the import fails: that is what the smoke of the published wheel (T15) must answer.
+      - name: Import and the paths without a GPU
+        run: uv run --no-sync python ci/gpu/smoke_devices.py --expect cpu,vulkan --no-gpu --dll-dir "$VULKAN_SDK/Bin"
+      - name: Device tests of the Python layer
+        # Python on Windows does not search PATH for DLLs: the folder of the runtime DLLs is given to it by hand
+        # (the extension would not import and pytest would stop at the collection of every file).
+        run: >-
+          uv run --no-sync python -c "import os, sys, pytest;
+          os.add_dll_directory(os.path.join(os.environ['VULKAN_SDK'], 'Bin'));
+          sys.exit(pytest.main(['-ra', '--tb=short', '-p', 'no:cacheprovider', '-k', 'device']))"
+
+  # ---- Metal on macOS arm64: compile, and the CPU path of a Metal build on a VM with no usable GPU (AC-13) ---------
+  metal-macos:
+    name: metal-macos
+    runs-on: macos-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      # .cargo/config.toml switches Metal off for every build; this job turns it on, and build.rs refuses the feature without it.
+      GGML_METAL: "ON"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: metal-macos
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+      - name: Install dev dependencies
+        run: uv sync --no-install-project
+      - name: Point PyO3 at the venv interpreter
+        run: echo "PYO3_PYTHON=$(uv run --no-sync python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+      - name: The metal feature is refused without GGML_METAL=ON
+        run: |
+          if GGML_METAL=OFF cargo check --features metal > metal.log 2>&1; then echo "::error::--features metal built with GGML_METAL=OFF"; exit 1; fi
+          grep -q "GGML_METAL=ON" metal.log || { cat metal.log; exit 1; }
+      - name: Build the extension with the feature
+        run: uv run --no-sync maturin develop --uv --features testing,metal
+      # A hard limit around everything that starts the Metal backend: it must answer or fail, never hang (the old fault).
+      - name: Import and devices (this VM may have no usable GPU)
+        run: |
+          uv run --no-sync python - <<'PY'
+          import subprocess, sys
+          cmd = [sys.executable, "ci/gpu/smoke_devices.py", "--expect", "cpu,metal"]
+          try:
+              r = subprocess.run(cmd, timeout=60)
+          except subprocess.TimeoutExpired:
+              raise SystemExit("the Metal build did not answer within 60 s: device=metal is not safe on this machine")
+          raise SystemExit(r.returncode)
+          PY
+      - name: Device tests of the Python layer
+        run: uv run --no-sync pytest -ra --tb=short -p no:cacheprovider -k device
+      - name: Cache the model file
+        id: gguf
+        uses: actions/cache@v5
+        with:
+          path: model.gguf
+          key: q8_0-${{ env.GGUF_SHA256 }}
+      - name: Download the model file
+        if: steps.gguf.outputs.cache-hit != 'true'
+        run: curl -fL --retry 4 --retry-delay 10 -o model.gguf "$GGUF_URL"
+      # AC-13: device="cpu" in a Metal build answers within 60 s (the default limit of the test).
+      - name: Decode with the CPU plan in a Metal build
+        run: |
+          echo "$GGUF_SHA256  model.gguf" > model.sha256
+          shasum -a 256 -c model.sha256
+          ARCHAI_JEV_TEST_V2_GGUF="$PWD/model.gguf" cargo test --release --features metal --test gpu_smoke -- --nocapture

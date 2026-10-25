@@ -21,27 +21,33 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The Rust used by every job. Pinned so that a lint added by a new stable cannot break unrelated
+  # pushes; rust-canary.yml runs the same checks on the latest stable every week. To move: change it
+  # here, run `rustup update` locally, and run the checks of .claude/skills/check.
+  RUST_VERSION: "1.99.1"
 
 jobs:
   quality:
     name: Quality (${{ matrix.os }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
         python: ["3.13"]
         include:
           # Oldest supported Python.
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             python: "3.10"
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy
       # Windows: the C++ object paths of llama.cpp are very deep; a short target dir keeps MSBuild under
       # MAX_PATH. The LLVM preinstalled on the runner provides libclang for bindgen (see llama-probe.yml).
@@ -62,6 +68,14 @@ jobs:
         run: cargo fmt --check
       - name: Rust lint
         run: cargo clippy --all-targets --features testing -- -D warnings
+      # What a release wheel compiles: no `testing`, no `quant-study`. A name that is imported only under
+      # a feature (or code used only by tests) compiles in every other step and breaks the wheels.
+      - name: Rust lint (release feature set)
+        if: matrix.python == '3.13'
+        run: cargo clippy --lib -- -D warnings
+      - name: Rust lint (with the study feature of spec 009)
+        if: matrix.python == '3.13' && runner.os == 'Linux'
+        run: cargo clippy --all-targets --features testing,quant-study -- -D warnings
       - name: Cache the Kev tokenizer (test asset, not in the repository)
         id: kev-tokenizer
         uses: actions/cache@v5
@@ -82,15 +96,36 @@ jobs:
         if: steps.default-tokenizer.outputs.cache-hit != 'true'
         run: |
           curl -fL --retry 4 --retry-delay 5 -o default-tokenizer.json https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/989aa7980e4cf806f80c7fef2b1adb7bc71aa306/tokenizer.json
-      - name: Check the tokenizers and expose them to the tests
+      - name: Cache the checkpoint conversion test assets (Kev head.pt, base tokenizer files)
+        id: conversion-assets
+        uses: actions/cache@v5
+        with:
+          path: |
+            kev-head.pt
+            base-tokenizer.json
+            base-tokenizer-config.json
+          key: conversion-assets-f400bd12802b2b10-fe000e3ed39ed12b-e611fbccc7c29ef3
+      - name: Download the checkpoint conversion test assets (SHA-256 checked below)
+        if: steps.conversion-assets.outputs.cache-hit != 'true'
         run: |
-          printf '%s\n' "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523  kev-tokenizer.json" "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539  default-tokenizer.json" > tokenizers.sha256
+          curl -fL --retry 4 --retry-delay 5 -o kev-head.pt https://huggingface.co/jaredpalmer/kev-0.8b/resolve/9a45d25eb2ab761841196625383fa1dff0e56c1e/head.pt
+          curl -fL --retry 4 --retry-delay 5 -o base-tokenizer.json https://huggingface.co/Qwen/Qwen3.5-0.8B-Base/resolve/dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68/tokenizer.json
+          curl -fL --retry 4 --retry-delay 5 -o base-tokenizer-config.json https://huggingface.co/Qwen/Qwen3.5-0.8B-Base/resolve/dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68/tokenizer_config.json
+      - name: Check the test assets and expose them to the tests
+        run: |
+          printf '%s\n' "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523  kev-tokenizer.json" "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539  default-tokenizer.json" "f400bd12802b2b105ae45d6b03774a158a3db4fccff42413734ddca2e5c920b6  kev-head.pt" "fe000e3ed39ed12b8d2481d527d44f93c65d37e87645d2dcc80d1bf9d50d2927  base-tokenizer.json" "e611fbccc7c29ef3b1cafb1cb7ea548d189968632901d678fd62be68c47885de  base-tokenizer-config.json" > tokenizers.sha256
           if command -v sha256sum >/dev/null; then sha256sum -c tokenizers.sha256; else shasum -a 256 -c tokenizers.sha256; fi
           echo "ARCHAI_JEV_TEST_TOKENIZER=$PWD/kev-tokenizer.json" >> "$GITHUB_ENV"
           echo "ARCHAI_JEV_TEST_DEFAULT_TOKENIZER=$PWD/default-tokenizer.json" >> "$GITHUB_ENV"
+          echo "ARCHAI_JEV_TEST_KEV_HEAD=$PWD/kev-head.pt" >> "$GITHUB_ENV"
+          echo "ARCHAI_JEV_TEST_BASE_TOKENIZER=$PWD/base-tokenizer.json" >> "$GITHUB_ENV"
+          echo "ARCHAI_JEV_TEST_BASE_TOKENIZER_CONFIG=$PWD/base-tokenizer-config.json" >> "$GITHUB_ENV"
           echo "ARCHAI_JEV_REQUIRE_ASSETS=1" >> "$GITHUB_ENV"
       - name: Rust tests
         run: cargo test --features testing
+      - name: Rust tests (with the study feature of spec 009)
+        if: matrix.python == '3.13' && runner.os == 'Linux'
+        run: cargo test --features testing,quant-study --lib
       - name: Build extension
         run: uv run --no-sync maturin develop --uv --features testing
       - name: Python format
@@ -102,15 +137,25 @@ jobs:
       - name: Stub matches compiled module
         run: uv run --no-sync python -m mypy.stubtest archai_jev._core
       - name: Python tests
-        run: uv run --no-sync pytest
+        run: uv run --no-sync pytest -ra --tb=short -p no:cacheprovider 2>&1 | tee pytest.log
+      # The log of a job cannot be read without being logged in to GitHub; an annotation can. Say which tests failed.
+      - name: Name the failed tests
+        if: failure()
+        run: |
+          if [ -f pytest.log ]; then
+            { echo '### Failed tests'; echo '```'; grep -E '^(FAILED|ERROR) ' pytest.log | head -40; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            grep -E '^(FAILED|ERROR) ' pytest.log | head -20 | while IFS= read -r line; do echo "::error title=pytest::${line:0:300}"; done
+          fi
 
   linux:
     # aarch64 builds on a native ARM runner so its wheel can be smoke-tested too.
     runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 90
     strategy:
+      fail-fast: false
       matrix:
         platform:
-          - runner: ubuntu-latest
+          - runner: ubuntu-24.04
             target: x86_64
           - runner: ubuntu-24.04-arm
             target: aarch64
@@ -123,6 +168,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
+          rust-toolchain: ${{ env.RUST_VERSION }}
           args: --release --out dist
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           # Built in the manylinux_2_28 image (AlmaLinux 8: a toolchain recent enough for llama.cpp; cmake and libclang are
@@ -142,12 +188,30 @@ jobs:
             if [ -x ".smoke-$py/bin/python" ]; then PY=".smoke-$py/bin/python"; else PY=".smoke-$py/Scripts/python.exe"; fi
             uv pip install --python "$PY" dist/*.whl
             "$PY" -c "import archai_jev, tempfile; print(archai_jev.calibrated_softmax([1.0, 2.0])); assert any(m.is_default for m in archai_jev.list_models());
+          assert archai_jev.compiled_backends() == ('cpu',), archai_jev.compiled_backends()
+          assert [d.name for d in archai_jev.available_devices()] == ['cpu']
+          try:
+              archai_jev.Jev.from_pretrained(device='cuda', offline=True, cache_dir=tempfile.mkdtemp())
+              raise SystemExit('device=cuda must not work on a CPU wheel')
+          except archai_jev.DeviceUnavailableError as e:
+              assert 'compiled without' in str(e), e
           try:
               archai_jev.Jev.from_pretrained(offline=True, cache_dir=tempfile.mkdtemp())
               raise SystemExit('the default model must not load from an empty cache')
           except archai_jev.ModelDownloadError as e:
-              print('offline with an empty cache:', str(e)[:80])"
+              print('offline with an empty cache:', str(e)[:80])
+          try:
+              archai_jev.Jev.from_pretrained(dtype='q4_k_m', offline=True, cache_dir=tempfile.mkdtemp())
+              raise SystemExit('a study dtype must not be accepted by a release wheel')
+          except ValueError as e:
+              assert 'q8_0' in str(e), e"
           done
+      # Spec 011, AC-11: GPU support must not make the CPU wheels bigger. Reference on Windows x64 before the
+      # work: 4,658,770 bytes (+1 % = 4,705,357). Reported here, compared by a person: sizes differ per platform.
+      - name: Wheel size
+        shell: bash
+        run: |
+          for w in dist/*.whl; do echo "$(basename "$w"): $(wc -c < "$w") bytes" | tee -a "$GITHUB_STEP_SUMMARY"; done
       - name: Upload wheels
         uses: actions/upload-artifact@v6
         with:
@@ -156,7 +220,9 @@ jobs:
 
   macos:
     runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 90
     strategy:
+      fail-fast: false
       matrix:
         platform:
           - runner: macos-15-intel
@@ -176,6 +242,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
+          rust-toolchain: ${{ env.RUST_VERSION }}
           args: --release --out dist
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - uses: astral-sh/setup-uv@v7
@@ -187,12 +254,30 @@ jobs:
             if [ -x ".smoke-$py/bin/python" ]; then PY=".smoke-$py/bin/python"; else PY=".smoke-$py/Scripts/python.exe"; fi
             uv pip install --python "$PY" dist/*.whl
             "$PY" -c "import archai_jev, tempfile; print(archai_jev.calibrated_softmax([1.0, 2.0])); assert any(m.is_default for m in archai_jev.list_models());
+          assert archai_jev.compiled_backends() == ('cpu',), archai_jev.compiled_backends()
+          assert [d.name for d in archai_jev.available_devices()] == ['cpu']
+          try:
+              archai_jev.Jev.from_pretrained(device='cuda', offline=True, cache_dir=tempfile.mkdtemp())
+              raise SystemExit('device=cuda must not work on a CPU wheel')
+          except archai_jev.DeviceUnavailableError as e:
+              assert 'compiled without' in str(e), e
           try:
               archai_jev.Jev.from_pretrained(offline=True, cache_dir=tempfile.mkdtemp())
               raise SystemExit('the default model must not load from an empty cache')
           except archai_jev.ModelDownloadError as e:
-              print('offline with an empty cache:', str(e)[:80])"
+              print('offline with an empty cache:', str(e)[:80])
+          try:
+              archai_jev.Jev.from_pretrained(dtype='q4_k_m', offline=True, cache_dir=tempfile.mkdtemp())
+              raise SystemExit('a study dtype must not be accepted by a release wheel')
+          except ValueError as e:
+              assert 'q8_0' in str(e), e"
           done
+      # Spec 011, AC-11: GPU support must not make the CPU wheels bigger. Reference on Windows x64 before the
+      # work: 4,658,770 bytes (+1 % = 4,705,357). Reported here, compared by a person: sizes differ per platform.
+      - name: Wheel size
+        shell: bash
+        run: |
+          for w in dist/*.whl; do echo "$(basename "$w"): $(wc -c < "$w") bytes" | tee -a "$GITHUB_STEP_SUMMARY"; done
       - name: Upload wheels
         uses: actions/upload-artifact@v6
         with:
@@ -201,6 +286,7 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -216,6 +302,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: x64
+          rust-toolchain: ${{ env.RUST_VERSION }}
           args: --release --out dist
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - uses: astral-sh/setup-uv@v7
@@ -227,12 +314,30 @@ jobs:
             if [ -x ".smoke-$py/bin/python" ]; then PY=".smoke-$py/bin/python"; else PY=".smoke-$py/Scripts/python.exe"; fi
             uv pip install --python "$PY" dist/*.whl
             "$PY" -c "import archai_jev, tempfile; print(archai_jev.calibrated_softmax([1.0, 2.0])); assert any(m.is_default for m in archai_jev.list_models());
+          assert archai_jev.compiled_backends() == ('cpu',), archai_jev.compiled_backends()
+          assert [d.name for d in archai_jev.available_devices()] == ['cpu']
+          try:
+              archai_jev.Jev.from_pretrained(device='cuda', offline=True, cache_dir=tempfile.mkdtemp())
+              raise SystemExit('device=cuda must not work on a CPU wheel')
+          except archai_jev.DeviceUnavailableError as e:
+              assert 'compiled without' in str(e), e
           try:
               archai_jev.Jev.from_pretrained(offline=True, cache_dir=tempfile.mkdtemp())
               raise SystemExit('the default model must not load from an empty cache')
           except archai_jev.ModelDownloadError as e:
-              print('offline with an empty cache:', str(e)[:80])"
+              print('offline with an empty cache:', str(e)[:80])
+          try:
+              archai_jev.Jev.from_pretrained(dtype='q4_k_m', offline=True, cache_dir=tempfile.mkdtemp())
+              raise SystemExit('a study dtype must not be accepted by a release wheel')
+          except ValueError as e:
+              assert 'q8_0' in str(e), e"
           done
+      # Spec 011, AC-11: GPU support must not make the CPU wheels bigger. Reference on Windows x64 before the
+      # work: 4,658,770 bytes (+1 % = 4,705,357). Reported here, compared by a person: sizes differ per platform.
+      - name: Wheel size
+        shell: bash
+        run: |
+          for w in dist/*.whl; do echo "$(basename "$w"): $(wc -c < "$w") bytes" | tee -a "$GITHUB_STEP_SUMMARY"; done
       - name: Upload wheels
         uses: actions/upload-artifact@v6
         with:
@@ -240,7 +345,8 @@ jobs:
           path: dist
 
   sdist:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
       - name: Build sdist
@@ -248,7 +354,9 @@ jobs:
         with:
           command: sdist
           args: --out dist
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - uses: astral-sh/setup-uv@v7
       - name: Build and test from source (platforms without a wheel)
         run: |

@@ -132,3 +132,29 @@ pub fn check_distinct(name: &str, ids: &[Vec<u32>], texts: &[String]) -> Result<
     }
     Ok(())
 }
+
+/// Refuse a key whose tokens are the start of the tokens of another key (`1` and `10`, `A` and
+/// `AB`, `option_1` and `option_10`). A key scores the sum of the log-probabilities of its tokens
+/// with no end marker, so the shorter key always scores at least as much as the longer one and the
+/// longer one can never be chosen: the probabilities would be wrong (D20, spec 010 section 2).
+/// `ids[j]` are the tokens of key `j`, `texts[j]` its text. Equal sequences are
+/// [`check_distinct`]'s business and are not reported here.
+///
+/// # Errors
+/// [`Unsupported::KeyStartsAnother`] for the first pair found, by the later index of the pair.
+pub fn check_no_key_prefix(name: &str, ids: &[Vec<u32>], texts: &[String]) -> Result<()> {
+    for (j, long) in ids.iter().enumerate() {
+        for (i, short) in ids.iter().enumerate() {
+            if i != j && short.len() < long.len() && long.starts_with(short) {
+                return Err(Error::Unsupported(Unsupported::KeyStartsAnother {
+                    question: name.to_string(),
+                    short: i,
+                    short_key: texts.get(i).cloned().unwrap_or_default(),
+                    long: j,
+                    long_key: texts.get(j).cloned().unwrap_or_default(),
+                }));
+            }
+        }
+    }
+    Ok(())
+}

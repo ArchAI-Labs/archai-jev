@@ -7,10 +7,15 @@
     clippy::indexing_slicing
 )]
 
+mod device_matrix;
 mod harness;
 mod hub_flow;
+mod mini;
 mod pipeline;
 mod reject;
 mod robustness;
+mod source;
+mod spark;
+mod variant_choice;
 
 pub(crate) use harness::Harness;

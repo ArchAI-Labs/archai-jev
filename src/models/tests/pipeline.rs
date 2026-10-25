@@ -13,7 +13,7 @@ use crate::models::registry::Registry;
 use crate::models::resolve::{NameOrPath, Selection};
 use crate::models::testing::builder::{Builder, COMMIT};
 use crate::models::testing::fake::Perturb;
-use crate::models::testing::jsonedit::{n, obj, s};
+use crate::models::testing::jsonedit::{obj, s};
 use crate::models::testing::{FakeBackend, FakeConverter};
 
 fn registry_for(fixture_text: &str) -> Registry {
@@ -174,7 +174,7 @@ fn the_ids_message_names_the_first_difference() {
 fn tolerance_boundaries_are_exact() {
     use crate::json_strict::Json;
     use crate::models::manifest::{CalibrationDecl, Source, Variant};
-    use crate::models::tolerance::Tolerance;
+    use crate::models::tolerance::{Reference, Tolerance};
     use crate::models::vectors::{Expected, Vector};
     use crate::models::verify::{RunOutput, VectorRunner, run_selfcheck};
 
@@ -198,6 +198,7 @@ fn tolerance_boundaries_are_exact() {
             temperature: None,
             evidence: None,
         },
+        reference: Reference::default(),
         vectors: vec![Vector {
             id: "v".into(),
             request: Json::Null,
@@ -406,10 +407,16 @@ fn what_the_manifest_alone_decides_happens_before_any_network_or_disk() {
     );
     // arguments
     req.selection.dtype = None;
-    req.selection.device = "cuda".to_string();
+    req.selection.device = "gpu".to_string();
     assert!(matches!(
         h.load(&req).err().unwrap(),
         Error::ModelArgument(_)
+    ));
+    // a device the build cannot offer is refused as early (spec 011, section 2)
+    req.selection.device = "cuda".to_string();
+    assert!(matches!(
+        h.load(&req).err().unwrap(),
+        Error::DeviceUnavailable(_)
     ));
     assert_eq!(h.transport.gets.load(Ordering::SeqCst), 0);
     assert!(
@@ -450,12 +457,7 @@ fn an_unknown_name_makes_no_request() {
 fn converted_fixture() -> (crate::models::testing::Fixture, Vec<u8>) {
     let good = Builder::tiny().build();
     let bytes = std::fs::read(good.gguf_path()).unwrap();
-    let f = Builder::tiny()
-        .set(
-            "variants.0.source",
-            obj(vec![("kind", s("hf-lora")), ("note", n(1))]),
-        )
-        .build();
+    let f = Builder::tiny().hf_lora().build();
     (f, bytes)
 }
 
@@ -470,8 +472,8 @@ fn converter_output_is_validated_like_a_downloaded_gguf() {
     assert_eq!(h.backend.runs(), 1);
     assert_eq!(
         h.records(),
-        0,
-        "converted models are always re-checked, no record"
+        1,
+        "a converted model gets a verification record like a downloaded one"
     );
     // a faulty converter (a tensor is missing) cannot get around the checks
     let faulty = Builder::tiny().drop_tensor("blk.0.attn_q.weight").build();
@@ -562,5 +564,218 @@ fn license_and_notice_are_reported() {
     assert!(
         warnings.iter().any(|w| w.contains("Demo model")),
         "{warnings:?}"
+    );
+}
+
+#[test]
+fn engine_vectors_fail_beyond_tol_p_and_full_precision_ones_do_not() {
+    // The engine is off by a logit shift of 5e-4 (a probability shift around 1e-4): inside the
+    // loose full-precision row of the family, outside the tight engine-recorded row. The same
+    // numbers are accepted or refused only because of `selfcheck.reference` (spec 009, AC-10).
+    for (reference, accepted) in [
+        (None, true),
+        (Some("full_precision"), true),
+        (Some("engine"), false),
+    ] {
+        let mut builder = Builder::tiny_fake();
+        if let Some(r) = reference {
+            builder = builder.set("variants.0.selfcheck.reference", s(r));
+        }
+        let fixture = builder.build();
+        let mut h = Harness::new();
+        h.backend = FakeBackend::new().perturbed(Perturb::LogitShift(5e-4));
+        let result = h.load(&h.local(fixture.path()));
+        match (accepted, result) {
+            (true, Ok(_)) => assert_eq!(h.records(), 1, "{reference:?}"),
+            (
+                false,
+                Err(Error::ModelVerification(VerifyFailure::Probability { tolerance, .. })),
+            ) => {
+                assert_eq!(tolerance, 1e-6, "the engine row is the one that answered");
+                assert_eq!(h.records(), 0, "a failure is never cached");
+            }
+            (accepted, other) => {
+                panic!("{reference:?} accepted={accepted}: {:?}", other.map(|_| ()))
+            }
+        }
+    }
+    // an engine-recorded variant whose numbers are exactly what the engine gives passes
+    let fixture = Builder::tiny_fake()
+        .set("variants.0.selfcheck.reference", s("engine"))
+        .build();
+    let h = Harness::new();
+    h.load(&h.local(fixture.path())).unwrap();
+    assert_eq!(h.records(), 1);
+}
+
+#[test]
+fn a_variant_the_manifest_does_not_offer_lists_the_available_ones() {
+    // spec 009 AC-4: asking for a dtype the manifest has no variant for names what it has
+    let h = registry_harness(Builder::tiny());
+    let req = crate::models::load::LoadRequest {
+        selection: Selection {
+            dtype: Some("bf16".to_string()),
+            ..named("test/tiny")
+        },
+        temperature: None,
+        allow_uncalibrated: true,
+    };
+    let err = h.load(&req).err().unwrap();
+    let Error::IncompatibleModel(Incompat::DtypeNotOffered { dtype, available }) = &err else {
+        panic!("{err:?}")
+    };
+    assert_eq!(
+        (dtype.as_str(), available.as_slice()),
+        ("bf16", &["q8_0".to_string()][..])
+    );
+    let text = err.to_string();
+    assert!(
+        text.contains("'bf16'") && text.contains("available: q8_0"),
+        "{text}"
+    );
+    assert_eq!(h.backend.loads(), 0);
+}
+
+/// A second variant (`bf16`) that declares a calibration, sharing the file entry of the first
+/// (it is never opened by these tests): a manifest with a calibrated sibling.
+pub(super) fn with_declared_sibling(builder: Builder) -> Builder {
+    use crate::json_strict::Json;
+    use crate::models::testing::jsonedit::{b, f, set};
+    builder.edit_manifest(|j| {
+        let Json::Object(top) = j else {
+            panic!("manifest")
+        };
+        let (_, variants) = top.iter_mut().find(|(k, _)| k == "variants").unwrap();
+        let Json::Array(items) = variants else {
+            panic!("variants")
+        };
+        let mut second = items[0].clone();
+        set(&mut second, "dtype", s("bf16"));
+        set(
+            &mut second,
+            "calibration",
+            obj(vec![
+                ("declared", b(true)),
+                ("temperature", f(2.09)),
+                ("evidence", s("measured on another set, for bf16 only")),
+            ]),
+        );
+        items.push(second);
+    })
+}
+
+#[test]
+fn an_uncalibrated_variant_names_its_calibrated_sibling_and_touches_nothing() {
+    // spec 009 AC-5: refused at stage 2, before the network and before any weights are read
+    // (the GGUF is deleted after the manifest is sealed: the refusal must not need it)
+    let fixture = with_declared_sibling(Builder::tiny())
+        .after_seal(|dir| std::fs::remove_file(dir.join("model.gguf")).unwrap())
+        .build();
+    let h = Harness::new();
+    let mut req = h.local(fixture.path());
+    req.allow_uncalibrated = false;
+    let err = h.load(&req).err().unwrap();
+    let Error::IncompatibleModel(Incompat::Uncalibrated {
+        dtype,
+        other_declared,
+        ..
+    }) = &err
+    else {
+        panic!("{err:?}")
+    };
+    assert_eq!(dtype, "q8_0");
+    assert_eq!(other_declared, &Some(("bf16".to_string(), 2.09)));
+    let text = err.to_string();
+    for part in ["(q8_0)", "Jev.calibrate()", "'bf16'", "does not transfer"] {
+        assert!(text.contains(part), "{part:?} missing from {text}");
+    }
+    assert_eq!(h.backend.loads(), 0);
+    assert_eq!(h.records(), 0);
+    assert_eq!(
+        h.transport.gets.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    // the same fixture without a calibrated sibling gets the plain message
+    let alone = Builder::tiny().build();
+    let mut req = h.local(alone.path());
+    req.allow_uncalibrated = false;
+    let text = h.load(&req).err().unwrap().to_string();
+    assert!(
+        text.contains("Jev.calibrate()") && !text.contains("does not transfer"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_calibrated_sibling_does_not_calibrate_the_variant_that_is_loaded() {
+    // spec 009 AC-6: with consent the variant runs at T = 1.0 and says so on every answer,
+    // although the bf16 variant of the same manifest declares 2.09
+    let fixture = with_declared_sibling(Builder::tiny()).build();
+    let h = Harness::new();
+    let model = h.load(&h.local(fixture.path())).unwrap();
+    assert_eq!(
+        (
+            model.data.dtype.as_str(),
+            model.data.temperature,
+            model.data.calibrated,
+            model.data.calibration_source
+        ),
+        ("q8_0", 1.0, false, "none")
+    );
+    assert_eq!(
+        (
+            model.scorer.calibration().temperature(),
+            model.scorer.calibration().calibrated()
+        ),
+        (1.0, false)
+    );
+    // and with a temperature of the user's: absolute, calibrated, source "user"
+    let mut req = h.local(fixture.path());
+    req.temperature = Some(1.7);
+    let model = h.load(&req).unwrap();
+    assert_eq!(
+        (
+            model.data.temperature,
+            model.data.calibrated,
+            model.data.calibration_source
+        ),
+        (1.7, true, "user")
+    );
+    assert_eq!(model.scorer.calibration().temperature(), 1.7);
+}
+
+#[test]
+fn a_loaded_model_reports_every_variant_of_its_manifest() {
+    // spec 009 AC-3: `variants` lists what the manifest offers, not only what was loaded, and
+    // the declared calibration belongs to the variant that declares it
+    let fixture = with_declared_sibling(Builder::tiny()).build();
+    let h = Harness::new();
+    let model = h.load(&h.local(fixture.path())).unwrap();
+    let size = std::fs::metadata(fixture.gguf_path()).unwrap().len();
+    let got: Vec<_> = model
+        .data
+        .variants
+        .iter()
+        .map(|v| {
+            (
+                v.dtype.as_str(),
+                v.size_bytes,
+                v.calibrated,
+                v.temperature,
+                v.is_default,
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("q8_0", Some(size), false, None, true),
+            ("bf16", Some(size), true, Some(2.09), false),
+        ]
+    );
+    // what was loaded is the first one, uncalibrated, whatever the second declares
+    assert_eq!(
+        (model.data.dtype.as_str(), model.data.calibrated),
+        ("q8_0", false)
     );
 }

@@ -1,0 +1,15 @@
+archai-jev test data: default model golden
+==========================================
+
+The prompts (the requests in golden.jsonl) were written by the authors of archai-jev and are
+covered by the licence of this repository (Apache-2.0). They follow the prompt formats of the
+training script of the model's author.
+
+The numbers (the logits at the answer tokens) are outputs of the model
+nickprock/archai-jev-qwen-1.5b, which is licensed under the Apache License, Version 2.0:
+
+  Model  https://huggingface.co/nickprock/archai-jev-qwen-1.5b  revision e4f3964abbc746f164f6cd009104e5213decba80 (Apache-2.0)
+  Base   https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct       revision 989aa7980e4cf806f80c7fef2b1adb7bc71aa306 (Apache-2.0)
+
+The data was transformed (reduced to the fields listed in PROVENANCE.json). No model weights and
+no tokenizer files are included.

@@ -59,6 +59,65 @@ pub fn sanitize(text: &str) -> Cow<'_, str> {
     }
 }
 
+/// Smallest number of characters of a control token: neutralising puts a mark after the first
+/// character, which only separates the others from it if there is at least one.
+pub const MIN_CONTROL_TOKEN_CHARS: usize = 2;
+
+/// Why a control token cannot be used by [`sanitize_control`], if it cannot.
+///
+/// The proof that no token survives (and that a second pass changes nothing) needs every token
+/// to have at least [`MIN_CONTROL_TOKEN_CHARS`] characters and none to contain the mark itself,
+/// which would let the mark put by one token build another.
+pub fn control_token_problem(token: &str) -> Option<&'static str> {
+    if token.chars().count() < MIN_CONTROL_TOKEN_CHARS {
+        Some("must have at least 2 characters")
+    } else if token.contains(BROKEN_BAR) {
+        Some("must not contain the character U+00A6 (it is what neutralises a token)")
+    } else {
+        None
+    }
+}
+
+/// Neutralise every occurrence of every token of `tokens` in `text` (spec 010b).
+///
+/// A model whose special tokens do not look like `<|name|>` (full-width bars, `<think>`) cannot
+/// use [`sanitize`]: the text of a request would still be able to write one. This puts
+/// U+00A6 after the first character of **every** occurrence, overlapping ones included
+/// (`</think>` becomes `<¦/think>`), so what the tokenizer sees is ordinary text. With tokens
+/// that satisfy [`control_token_problem`] no occurrence is left, so a second pass changes
+/// nothing. Returns the input untouched (no allocation) when no token occurs.
+pub fn sanitize_control<'a>(text: &'a str, tokens: &[String]) -> Cow<'a, str> {
+    // Only a position that holds the first character of some token can start one: most tokens
+    // begin with the same `<`, so almost every position is dismissed by a comparison.
+    let mut firsts: Vec<char> = tokens.iter().filter_map(|t| t.chars().next()).collect();
+    firsts.sort_unstable();
+    firsts.dedup();
+    let hits = |rest: &str| {
+        tokens
+            .iter()
+            .any(|t| !t.is_empty() && rest.starts_with(t.as_str()))
+    };
+    let mut out: Option<String> = None;
+    let mut copied = 0usize;
+    for (i, c) in text.char_indices() {
+        if firsts.binary_search(&c).is_err() || !hits(text.get(i..).unwrap_or_default()) {
+            continue;
+        }
+        let after_first = i + c.len_utf8();
+        let buf = out.get_or_insert_with(|| String::with_capacity(text.len() + 8));
+        buf.push_str(text.get(copied..after_first).unwrap_or_default());
+        buf.push(BROKEN_BAR);
+        copied = after_first;
+    }
+    match out {
+        Some(mut buf) => {
+            buf.push_str(text.get(copied..).unwrap_or_default());
+            Cow::Owned(buf)
+        }
+        None => Cow::Borrowed(text),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

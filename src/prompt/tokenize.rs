@@ -122,7 +122,7 @@ impl PromptTokenizer {
     clippy::indexing_slicing
 )]
 pub mod testkit {
-    use tokenizers::models::bpe::BPE;
+    use tokenizers::models::bpe::{BPE, Vocab};
     use tokenizers::normalizers::NFC;
     use tokenizers::pre_tokenizers::byte_level::ByteLevel;
     use tokenizers::{AddedToken, Tokenizer};
@@ -131,6 +131,15 @@ pub mod testkit {
 
     /// A byte-level tokenizer with `specials` (`(role, text)`) added after the 256 byte tokens.
     pub fn byte_level(specials: &[(&str, &str)]) -> PromptTokenizer {
+        byte_level_with_merges(specials, &[])
+    }
+
+    /// Like [`byte_level`], plus `merges`: pairs of **byte symbols** (`Ġ` is the space) that merge
+    /// into one token, so a boundary between two fixed texts can be made to disappear.
+    pub fn byte_level_with_merges(
+        specials: &[(&str, &str)],
+        merges: &[(&str, &str)],
+    ) -> PromptTokenizer {
         let mut alphabet: Vec<char> = ByteLevel::alphabet().into_iter().collect();
         alphabet.sort_unstable();
         assert_eq!(
@@ -138,10 +147,18 @@ pub mod testkit {
             256,
             "the byte-level alphabet has 256 symbols"
         );
-        let vocab: [(String, u32); 256] =
-            std::array::from_fn(|i| (alphabet[i].to_string(), i as u32));
+        let mut vocab: Vocab = (0..256)
+            .map(|i| (alphabet[i].to_string(), i as u32))
+            .collect();
+        for (i, (a, b)) in merges.iter().enumerate() {
+            vocab.insert(format!("{a}{b}"), 256 + i as u32);
+        }
+        let merges: Vec<(String, String)> = merges
+            .iter()
+            .map(|(a, b)| ((*a).to_string(), (*b).to_string()))
+            .collect();
         let bpe = BPE::builder()
-            .vocab_and_merges(vocab, Vec::new())
+            .vocab_and_merges(vocab, merges)
             .build()
             .expect("byte-level BPE");
         let mut tk = Tokenizer::new(bpe);

@@ -1,0 +1,106 @@
+# Manual job (spec 009, D60): does the self-check of the DEFAULT model pass on every platform? Each platform
+# downloads the published Q8_0 file of the registry entry (SHA-256 checked), runs the 16 vectors of its
+# manifest (expected numbers from the reference engine in full precision) the way the library does at load,
+# and reports the largest difference of probability against the tolerance of the library (0.1).
+# The same test run on the Q4_K_M of the v2 gave 0.08-0.14 between platforms and kept it out of the registry.
+#
+# It is not part of CI: it downloads 1.6 GB per platform. Run it by hand ("Run workflow", once the file is on the
+# default branch) when the default model, the engine or the tolerances change. Measured on 2026-10-18 (D60): all
+# five platforms pass, largest difference 0.039 against the tolerance 0.1.
+name: Default self-check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Same pin as CI.yml.
+  RUST_VERSION: "1.99.1"
+  # The file under test: the Q8_0 of the registry entry (repository, revision and SHA-256 as in the manifest).
+  GGUF_URL: https://huggingface.co/nickprock/archai-jev-qwen-1.5b/resolve/7730248dc1b411f594ec88c657d26285decb3cb9/archai-jev-qwen1.5b-q8.gguf
+  GGUF_SHA256: 5dfad79eba479688fbd4bc5b43dd8279aeb5a49259f73a0a3f330b38790aa809
+  TOKENIZER_URL: https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/989aa7980e4cf806f80c7fef2b1adb7bc71aa306/tokenizer.json
+  TOKENIZER_SHA256: c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539
+
+jobs:
+  reproduce:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, runner: ubuntu-24.04 }
+          - { name: linux-aarch64, runner: ubuntu-24.04-arm }
+          - { name: macos-arm64, runner: macos-latest }
+          - { name: macos-x86_64, runner: macos-15-intel }
+          - { name: windows-x86_64, runner: windows-latest }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Windows build environment
+        if: runner.os == 'Windows'
+        run: |
+          echo "CARGO_TARGET_DIR=C:\t" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
+      - name: macOS x86_64 deployment target
+        if: matrix.name == 'macos-x86_64'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=10.15" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+      - name: Point PyO3 at an interpreter
+        run: |
+          uv venv .pyo3
+          if [ -x .pyo3/bin/python ]; then PY="$PWD/.pyo3/bin/python"; else PY="$PWD/.pyo3/Scripts/python.exe"; fi
+          echo "PYO3_PYTHON=$PY" >> "$GITHUB_ENV"
+          # The test binary links libpython (PyO3). The Python of uv is a standalone build whose shared library
+          # is not on the loader path (Linux ARM: "libpython3.13.so.1.0: cannot open shared object file").
+          LIBDIR="$("$PY" -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR") or "")')"
+          if [ -n "$LIBDIR" ] && [ "$RUNNER_OS" = "Linux" ]; then echo "LD_LIBRARY_PATH=$LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"; fi
+          if [ -n "$LIBDIR" ] && [ "$RUNNER_OS" = "macOS" ]; then echo "DYLD_FALLBACK_LIBRARY_PATH=$LIBDIR" >> "$GITHUB_ENV"; fi
+      - name: Cache the model file
+        id: gguf
+        uses: actions/cache@v5
+        with:
+          path: model.gguf
+          key: q8_0-${{ env.GGUF_SHA256 }}
+      - name: Download the model file
+        if: steps.gguf.outputs.cache-hit != 'true'
+        run: curl -fL --retry 4 --retry-delay 10 -o model.gguf "$GGUF_URL"
+      - name: Download the tokenizer
+        run: curl -fL --retry 4 --retry-delay 5 -o tokenizer.json "$TOKENIZER_URL"
+      - name: Check the files
+        run: |
+          printf '%s\n' "$GGUF_SHA256  model.gguf" "$TOKENIZER_SHA256  tokenizer.json" > files.sha256
+          if command -v sha256sum >/dev/null; then sha256sum -c files.sha256; else shasum -a 256 -c files.sha256; fi
+      - name: Run the self-check of the default model
+        run: |
+          export ARCHAI_JEV_TEST_DEFAULT_TOKENIZER="$PWD/tokenizer.json"
+          export ARCHAI_JEV_TEST_V2_GGUF="$PWD/model.gguf"
+          cargo test --release --features testing --test quantized_vectors the_selfcheck_of_the_default -- --include-ignored --nocapture 2>&1 | tee reproduce.log
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "### ${{ matrix.name }}"
+            echo '```'
+            grep -E "max \|dp\| =|SELFCHECK_DEFAULT|test result" reproduce.log || { echo "no result; last lines of the log:"; tail -n 40 reproduce.log; }
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the log
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: reproduce-${{ matrix.name }}
+          path: reproduce.log

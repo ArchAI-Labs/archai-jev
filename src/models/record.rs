@@ -57,10 +57,14 @@ pub struct Record {
 }
 
 /// The key: a hash of everything that must be the same for a record to apply.
-pub fn key(manifest_sha256: &str, dtype: &str) -> String {
+///
+/// `device` is the identity of the device the self-check ran on (`"cpu"`, or the name and the
+/// description of a GPU): a record written for one device never vouches for another, because
+/// another GPU runs other kernels (spec 011, section 3 rule 4).
+pub fn key(manifest_sha256: &str, dtype: &str, device: &str) -> String {
     sha256_hex(
         format!(
-            "v1|{LIB_VERSION}|{BUILD_ID}|{}|{manifest_sha256}|{dtype}",
+            "v2|{LIB_VERSION}|{BUILD_ID}|{}|{manifest_sha256}|{dtype}|{device}",
             platform()
         )
         .as_bytes(),
@@ -174,7 +178,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("f.bin");
         std::fs::write(&f, b"hello").unwrap();
-        let r = rec(&key(&"b".repeat(64), "q8_0"), &f);
+        let r = rec(&key(&"b".repeat(64), "q8_0", "cpu"), &f);
         save(dir.path(), &r).unwrap();
         let back = load(dir.path(), &r.key).unwrap();
         assert_eq!(back, r);
@@ -188,10 +192,35 @@ mod tests {
 
     #[test]
     fn key_depends_on_manifest_and_dtype() {
-        let a = key(&"1".repeat(64), "q8_0");
-        assert_ne!(a, key(&"2".repeat(64), "q8_0"));
-        assert_ne!(a, key(&"1".repeat(64), "bf16"));
-        assert_eq!(a, key(&"1".repeat(64), "q8_0"));
+        let a = key(&"1".repeat(64), "q8_0", "cpu");
+        assert_ne!(a, key(&"2".repeat(64), "q8_0", "cpu"));
+        assert_ne!(a, key(&"1".repeat(64), "bf16", "cpu"));
+        assert_eq!(a, key(&"1".repeat(64), "q8_0", "cpu"));
+    }
+
+    #[test]
+    fn a_record_is_per_device() {
+        let sha = "1".repeat(64);
+        let cpu = key(&sha, "q8_0", "cpu");
+        let cuda = key(&sha, "q8_0", "cuda:0/NVIDIA GeForce RTX 5070 Laptop GPU");
+        assert_ne!(
+            cpu, cuda,
+            "a record written on the CPU must not vouch for a GPU"
+        );
+        // two GPUs of the same backend are two devices, and so are two drivers' names for one
+        let other_index = key(&sha, "q8_0", "cuda:1/NVIDIA GeForce RTX 5070 Laptop GPU");
+        let other_gpu = key(&sha, "q8_0", "cuda:0/NVIDIA GeForce RTX 4090");
+        assert_ne!(cuda, other_index);
+        assert_ne!(cuda, other_gpu);
+        assert_ne!(
+            key(&sha, "q8_0", "cuda:0/x"),
+            key(&sha, "q8_0", "vulkan:0/x"),
+            "the backend is part of the identity"
+        );
+        assert_eq!(
+            cuda,
+            key(&sha, "q8_0", "cuda:0/NVIDIA GeForce RTX 5070 Laptop GPU")
+        );
     }
 
     #[test]

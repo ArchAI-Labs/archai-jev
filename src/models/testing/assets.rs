@@ -56,6 +56,79 @@ pub const DEFAULT_TOKENIZER_SHA256: &str =
 /// How to get the default model's tokenizer.
 pub const DEFAULT_TOKENIZER_HELP: &str = "set ARCHAI_JEV_TEST_DEFAULT_TOKENIZER to the tokenizer.json of Qwen/Qwen2.5-1.5B-Instruct @ 989aa7980e4cf806f80c7fef2b1adb7bc71aa306";
 
+/// SHA-256 of the `head.pt` of `jaredpalmer/kev-0.8b` @ `9a45d25e` (2,1 MB).
+pub const KEV_HEAD_SHA256: &str =
+    "f400bd12802b2b105ae45d6b03774a158a3db4fccff42413734ddca2e5c920b6";
+
+/// How to get Kev's `head.pt`.
+pub const KEV_HEAD_HELP: &str = "set ARCHAI_JEV_TEST_KEV_HEAD to the head.pt of \
+jaredpalmer/kev-0.8b @ 9a45d25eb2ab761841196625383fa1dff0e56c1e";
+
+/// Kev's `head.pt` (level T1), or `None` when missing and not required.
+///
+/// # Panics
+/// When the asset is required and missing, or has the wrong hash.
+pub fn kev_head() -> Option<PathBuf> {
+    let given = std::env::var("ARCHAI_JEV_TEST_KEV_HEAD").ok();
+    match resolve(
+        given.as_deref(),
+        KEV_HEAD_SHA256,
+        "kev head.pt",
+        KEV_HEAD_HELP,
+        require_assets(),
+    ) {
+        Ok(Some(p)) => Some(p),
+        Ok(None) => {
+            eprintln!("SKIPPED: kev head.pt is missing: {KEV_HEAD_HELP}");
+            None
+        }
+        Err(msg) => panic!("{msg}"),
+    }
+}
+
+/// SHA-256 of `tokenizer.json` of `Qwen/Qwen3.5-0.8B-Base` @ `dc7cdfe2` (12,8 MB).
+pub const KEV_BASE_TOKENIZER_SHA256: &str =
+    "fe000e3ed39ed12b8d2481d527d44f93c65d37e87645d2dcc80d1bf9d50d2927";
+/// SHA-256 of `tokenizer_config.json` of `Qwen/Qwen3.5-0.8B-Base` @ `dc7cdfe2` (16 KB).
+pub const KEV_BASE_TOKENIZER_CONFIG_SHA256: &str =
+    "e611fbccc7c29ef3b1cafb1cb7ea548d189968632901d678fd62be68c47885de";
+
+/// A T1 asset: `variable` points at it, `sha256` is what it must be.
+///
+/// # Panics
+/// When the asset is required and missing, or has the wrong hash.
+pub fn asset(variable: &str, sha256: &str, name: &str, help: &str) -> Option<PathBuf> {
+    let given = std::env::var(variable).ok();
+    match resolve(given.as_deref(), sha256, name, help, require_assets()) {
+        Ok(Some(p)) => Some(p),
+        Ok(None) => {
+            eprintln!("SKIPPED: {name} is missing: {help}");
+            None
+        }
+        Err(msg) => panic!("{msg}"),
+    }
+}
+
+/// `tokenizer.json` of the base model of Kev-0.8B (level T1).
+pub fn kev_base_tokenizer() -> Option<PathBuf> {
+    asset(
+        "ARCHAI_JEV_TEST_BASE_TOKENIZER",
+        KEV_BASE_TOKENIZER_SHA256,
+        "base tokenizer.json",
+        "set ARCHAI_JEV_TEST_BASE_TOKENIZER to the tokenizer.json of Qwen/Qwen3.5-0.8B-Base @ dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68",
+    )
+}
+
+/// `tokenizer_config.json` of the base model of Kev-0.8B (level T1).
+pub fn kev_base_tokenizer_config() -> Option<PathBuf> {
+    asset(
+        "ARCHAI_JEV_TEST_BASE_TOKENIZER_CONFIG",
+        KEV_BASE_TOKENIZER_CONFIG_SHA256,
+        "base tokenizer_config.json",
+        "set ARCHAI_JEV_TEST_BASE_TOKENIZER_CONFIG to the tokenizer_config.json of Qwen/Qwen3.5-0.8B-Base @ dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68",
+    )
+}
+
 /// Whether CI wants missing assets to fail.
 pub fn require_assets() -> bool {
     std::env::var("ARCHAI_JEV_REQUIRE_ASSETS").is_ok_and(|v| v == "1")

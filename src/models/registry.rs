@@ -8,13 +8,17 @@ use std::sync::OnceLock;
 use super::files::FileEntry;
 use super::incompat::Incompat;
 use super::manifest::{HeadSpec, Manifest, ManifestOrigin, Source};
+use super::recipes;
 use super::validate;
 use crate::json_strict::{self, Json, Obj};
 
 /// Manifests of the built-in models (one file per entry, included at compile time).
-const BUILTIN_MANIFESTS: &[&str] = &[include_str!(
-    "registry/nickprock__archai-jev-qwen-1.5b.json"
-)];
+const BUILTIN_MANIFESTS: &[&str] = &[
+    include_str!("registry/nickprock__archai-jev-qwen-1.5b.json"),
+    include_str!("registry/nickprock__archai-jev-qwen-1.5b@7730248d.json"),
+    include_str!("registry/jaredpalmer__kev-0.8b.json"),
+    include_str!("registry/nickprock__archai-jev-games-1.5b-v2.json"),
+];
 /// Which entry is the default and which revision of each name is current.
 const BUILTIN_INDEX: &str = include_str!("registry/index.json");
 
@@ -196,10 +200,20 @@ impl Registry {
             {
                 return Err(format!("{tag} appears twice"));
             }
-            validate::semantics(m, &[]).map_err(|e| format!("{tag}: {e}"))?;
+            // a registry entry is judged by what it declares, not by what this build can convert
+            validate::semantics(m, &["hf-lora".to_string()]).map_err(|e| format!("{tag}: {e}"))?;
             for file in all_files(m) {
                 if file.origin.is_none() {
                     return Err(format!("{tag}: file {} has no origin", file.path));
+                }
+            }
+            for v in &m.variants {
+                if v.calibration.declared && recipes::is_quantized(&v.dtype) {
+                    check_quantized_evidence(
+                        &tag,
+                        &v.dtype,
+                        v.calibration.evidence.as_deref().unwrap_or(""),
+                    )?;
                 }
             }
             if !PERMISSIVE.contains(&m.license.spdx.as_str())
@@ -221,6 +235,15 @@ impl Registry {
                     .any(|m| &m.name == n && &m.revision == r)
                 {
                     return Err(format!("the default {n}@{r} is not an entry"));
+                }
+                // what `Jev.from_pretrained()` loads must run without any consent (spec 009)
+                let default_variant = self
+                    .default_entry()
+                    .and_then(|m| m.variant(&m.default_dtype));
+                if !default_variant.is_some_and(|v| v.calibration.declared) {
+                    return Err(format!(
+                        "the default variant of the default entry {n}@{r} must declare a calibration"
+                    ));
                 }
             }
         }
@@ -245,6 +268,27 @@ impl Registry {
     }
 }
 
+/// A quantised variant is its own model (D22): its declared calibration must say which variant
+/// it was measured on, with which sample sizes (fit and test) and what the ECE did.
+fn check_quantized_evidence(tag: &str, dtype: &str, evidence: &str) -> Result<(), String> {
+    if !evidence.contains(dtype) {
+        return Err(format!(
+            "{tag}: the evidence of the quantised variant {dtype} must name its dtype"
+        ));
+    }
+    if evidence.matches("n=").count() < 2 {
+        return Err(format!(
+            "{tag}: the evidence of {dtype} must give two sample sizes (n=...), for the fit and for the test"
+        ));
+    }
+    if !evidence.contains("ECE") || !evidence.contains("->") {
+        return Err(format!(
+            "{tag}: the evidence of {dtype} must give the ECE before and after (ECE a -> b)"
+        ));
+    }
+    Ok(())
+}
+
 /// Every file entry of a manifest (tokenizer, head weights, variant sources).
 pub fn all_files(m: &Manifest) -> Vec<&FileEntry> {
     let mut out = vec![&m.tokenizer.file];
@@ -252,8 +296,10 @@ pub fn all_files(m: &Manifest) -> Vec<&FileEntry> {
         out.push(weights);
     }
     for v in &m.variants {
-        if let Source::Gguf { file } = &v.source {
-            out.push(file);
+        match &v.source {
+            Source::Gguf { file } => out.push(file),
+            Source::HfLora(source) => out.extend(source.files()),
+            Source::Reserved { .. } => {}
         }
     }
     out
@@ -262,6 +308,21 @@ pub fn all_files(m: &Manifest) -> Vec<&FileEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::manifest::HeadSpec;
+    use crate::prompt::tasks;
+
+    #[test]
+    fn the_builtin_registry_has_no_third_party_letters_family() {
+        // the family exists in the table of families, but no registry entry uses it: a model of
+        // this family is a local folder with its own manifest
+        let reg = Registry::builtin().unwrap();
+        for m in reg.entries() {
+            assert_ne!(m.family, "spark2_5-letters", "{}", m.name);
+            assert_ne!(m.head.kind(), "answer_letters", "{}", m.name);
+            assert!(m.tokenizer.control_tokens.is_empty(), "{}", m.name);
+        }
+        assert!(crate::models::families::lookup("spark2_5-letters").is_some());
+    }
 
     #[test]
     fn the_builtin_registry_passes_its_lint() {
@@ -270,10 +331,387 @@ mod tests {
     }
 
     #[test]
+    fn the_v1_revision_declares_what_the_demo_model_is() {
+        // the first revision (tag v1): no longer the default, still a pinned, loadable entry
+        let reg = Registry::builtin().unwrap();
+        let m = reg
+            .resolve("nickprock/archai-jev-qwen-1.5b", Some("e4f3964a"))
+            .unwrap();
+        assert!(!reg.is_default(m));
+        assert_eq!(m.name, "nickprock/archai-jev-qwen-1.5b");
+        assert_eq!(m.family, "qwen2-letters");
+        assert_eq!(
+            (m.template.id.as_str(), m.template.version),
+            ("chatml-letters", 1)
+        );
+        assert_eq!(m.max_context, 512);
+
+        // The head: ids, not strings (005 section 6.4), and the restricted softmax.
+        let HeadSpec::Letters {
+            rule,
+            choice_targets,
+            yes_no,
+        } = &m.head
+        else {
+            panic!("the default has a letters head")
+        };
+        assert_eq!(rule, "restricted_softmax");
+        let ids: Vec<(&str, u32)> = choice_targets
+            .iter()
+            .map(|t| (t.label.as_str(), t.id))
+            .collect();
+        assert_eq!(ids, [("A", 32), ("B", 33), ("C", 34), ("D", 35)]);
+        let (no, yes) = yes_no.as_ref().unwrap();
+        assert_eq!(
+            ((no.label.as_str(), no.id), (yes.label.as_str(), yes.id)),
+            (("FALSE", 30_351), ("TRUE", 20_611))
+        );
+
+        // The four tasks, read by the strict reader of the template.
+        let tasks = m.tasks.as_ref().unwrap();
+        let ids: Vec<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["safety", "intent", "entailment", "similarity"]);
+        let specs = tasks::parse(tasks, choice_targets.len()).unwrap();
+
+        // The declared calibration says which rule and which data it comes from.
+        assert_eq!(m.variants.len(), 1);
+        let variant = &m.variants[0];
+        assert_eq!(variant.dtype, "q8_0");
+        assert!(variant.calibration.declared);
+        assert_eq!(variant.calibration.temperature, Some(2.09));
+        let evidence = variant.calibration.evidence.as_deref().unwrap();
+        for phrase in [
+            "restricted softmax",
+            "first K answer letters",
+            "validation split",
+            "n=1447",
+            "0.058 -> 0.013",
+            "In-distribution only",
+        ] {
+            assert!(
+                evidence.contains(phrase),
+                "evidence lacks {phrase:?}: {evidence}"
+            );
+        }
+
+        // The notice says what the model is and what it is not.
+        let notice = m.notice.as_deref().unwrap();
+        for phrase in [
+            "Demo model",
+            "four fixed tasks",
+            "same distribution as its training data",
+            "overconfident",
+            "31 of the 77",
+            "not a general intent classifier",
+            "Not suitable for general-purpose use",
+        ] {
+            assert!(notice.contains(phrase), "notice lacks {phrase:?}: {notice}");
+        }
+
+        // Self-check vectors: every task has at least one (a vector is the task its question is).
+        let mut covered: Vec<String> = Vec::new();
+        for v in &variant.vectors {
+            let (state, questions) = crate::request::request_to_domain(&v.request).unwrap();
+            for (name, question) in questions.iter() {
+                let task = tasks::find(&specs, &m.name, name, question, &state).unwrap();
+                covered.push(task.id.clone());
+            }
+        }
+        for id in ids {
+            assert!(
+                covered.iter().any(|c| c == id),
+                "no self-check vector for {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_v2_is_the_current_and_default_revision_and_the_v1_stays_reachable() {
+        let reg = Registry::builtin().unwrap();
+        let name = "nickprock/archai-jev-qwen-1.5b";
+        let current = reg.resolve(name, None).unwrap();
+        assert_eq!(current.revision, "7730248dc1b411f594ec88c657d26285decb3cb9");
+        assert!(reg.is_default(current));
+        assert_eq!(
+            reg.default_entry().map(|m| &m.revision),
+            Some(&current.revision)
+        );
+        // the v1 is a revision of the same name, found by its 8-digit prefix
+        let v1 = reg.resolve(name, Some("e4f3964a")).unwrap();
+        assert_eq!(v1.revision, "e4f3964abbc746f164f6cd009104e5213decba80");
+        assert!(!reg.is_default(v1));
+        // an 8-digit prefix is enough for the v2 too: another family, head, template, no tasks
+        let v2 = reg.resolve(name, Some("7730248d")).unwrap();
+        assert!(std::ptr::eq(v2, current));
+        assert_eq!(v2.family, "qwen2-keys");
+        assert_eq!(
+            (v2.template.id.as_str(), v2.template.version),
+            ("decision-index-chatml", 1)
+        );
+        assert!(v2.tasks.is_none());
+        assert!(matches!(
+            v2.head,
+            HeadSpec::KeyLogProb {
+                max_options: 20,
+                max_key_tokens: 4,
+                ..
+            }
+        ));
+        let q8 = v2.variants.iter().find(|v| v.dtype == "q8_0").unwrap();
+        assert!(q8.calibration.declared);
+        assert_eq!(q8.calibration.temperature, Some(1.7497));
+        // the weights are the very file the v2 commit publishes
+        let Source::Gguf { file } = &q8.source else {
+            panic!("a GGUF source")
+        };
+        assert_eq!(
+            file.sha256,
+            "5dfad79eba479688fbd4bc5b43dd8279aeb5a49259f73a0a3f330b38790aa809"
+        );
+        assert_eq!(file.size, 1_646_572_736);
+    }
+
+    #[test]
+    fn the_games_model_is_an_entry_of_the_registry_that_is_not_the_default() {
+        let reg = Registry::builtin().unwrap();
+        let name = "nickprock/archai-jev-games-1.5b-v2";
+        let m = reg.resolve(name, None).unwrap();
+        assert_eq!(m.revision, "04be1d565976baf8f0efdc2062e6277bda4516ae");
+        assert!(!reg.is_default(m));
+        assert_eq!(m.family, "qwen2-keys");
+        assert!(m.tasks.is_none());
+        assert_eq!(m.max_context, 512);
+        assert!(matches!(
+            m.head,
+            HeadSpec::KeyLogProb {
+                max_options: 4,
+                max_key_tokens: 4,
+                ..
+            }
+        ));
+        let q8 = m.variants.iter().find(|v| v.dtype == "q8_0").unwrap();
+        // the raw probabilities are declared as they are (a fit made them worse, see the evidence)
+        assert!(q8.calibration.declared);
+        assert_eq!(q8.calibration.temperature, Some(1.0));
+        let evidence = q8.calibration.evidence.as_deref().unwrap();
+        for phrase in ["No rescaling", "gave 1.16", "game-sensors-v1"] {
+            assert!(evidence.contains(phrase), "evidence lacks {phrase:?}");
+        }
+        // 24 vectors of the fp32 reference and the one of noul, which the notice owns up to
+        assert_eq!(q8.vectors.len(), 25);
+        let notice = m.notice.as_deref().unwrap();
+        for phrase in ["not a general-purpose model", "not an independent"] {
+            assert!(notice.contains(phrase), "notice lacks {phrase:?}");
+        }
+        // the weights are the file of that commit, and the tokenizer is the one of the base model
+        let Source::Gguf { file } = &q8.source else {
+            panic!("a GGUF source")
+        };
+        assert_eq!(
+            file.sha256,
+            "70ee8bee3dae5bf7568a2595f408598a23b7c18259a5f04a39e875c387ab31dd"
+        );
+        assert_eq!(file.size, 1_646_572_832);
+        assert_eq!(
+            m.tokenizer.file.sha256,
+            "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539"
+        );
+        // adding it did not move the default or the current revision of the others
+        let default = reg.default_entry().unwrap();
+        assert_eq!(default.name, "nickprock/archai-jev-qwen-1.5b");
+    }
+
+    #[test]
+    fn kev_0_8b_pins_its_eight_files_and_declares_both_variants() {
+        let reg = Registry::builtin().unwrap();
+        let m = reg
+            .resolve("jaredpalmer/kev-0.8b", None)
+            .expect("the entry exists");
+        assert_eq!(m.revision, "9a45d25eb2ab761841196625383fa1dff0e56c1e");
+        assert_eq!(m.family, "qwen35-pointer");
+        assert_eq!((m.template.id.as_str(), m.template.version), ("kev", 1));
+        assert_eq!((m.max_context, m.trained_context), (8205, Some(7552)));
+        assert_eq!(m.license.spdx, "Apache-2.0");
+        assert!(!reg.is_default(m), "the demo model stays the default");
+        let HeadSpec::Pointer {
+            d_model, proj_dim, ..
+        } = &m.head
+        else {
+            panic!("a pointer head")
+        };
+        assert_eq!((*d_model, *proj_dim), (1024, 256));
+        // the files: path, size and SHA-256 of spec 018 section 5
+        let mut files: Vec<(&str, u64, &str)> = all_files(m)
+            .into_iter()
+            .map(|f| (f.path.as_str(), f.size, f.sha256.as_str()))
+            .collect();
+        files.sort_unstable();
+        files.dedup();
+        let want = [
+            (
+                "adapter_config.json",
+                1273,
+                "748acb2cda88454cb1ba69d745ba336f3fcb5486eac349e90960c8b8d8d3e854",
+            ),
+            (
+                "adapter_model.safetensors",
+                43_338_624,
+                "9b908623acb162118575f4e7a94524f9c139c335be4bfb74d6cfceca01e1885a",
+            ),
+            (
+                "config.json",
+                2907,
+                "b90b86f35c8e6925ef74ee04d0e758f0a845c83a42089ad82bbaa948de9b4204",
+            ),
+            (
+                "head.pt",
+                2_103_999,
+                "f400bd12802b2b105ae45d6b03774a158a3db4fccff42413734ddca2e5c920b6",
+            ),
+            (
+                "model.safetensors-00001-of-00001.safetensors",
+                1_746_942_600,
+                "c2b1e5a17d9c1e27685d92ed9b382911ebb99955ecd89052d1721241adfbab6c",
+            ),
+            (
+                "tokenizer.json",
+                12_807_196,
+                "fe000e3ed39ed12b8d2481d527d44f93c65d37e87645d2dcc80d1bf9d50d2927",
+            ),
+            (
+                "tokenizer.json",
+                19_989_325,
+                "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+            ),
+            (
+                "tokenizer_config.json",
+                16_712,
+                "e611fbccc7c29ef3b1cafb1cb7ea548d189968632901d678fd62be68c47885de",
+            ),
+        ];
+        assert_eq!(files, want);
+        // both variants, the default one in bf16, the same declared temperature, 8 vectors each
+        let dtypes: Vec<&str> = m.variants.iter().map(|v| v.dtype.as_str()).collect();
+        assert_eq!(
+            (dtypes.as_slice(), m.default_dtype.as_str()),
+            (["bf16", "f32"].as_slice(), "bf16")
+        );
+        for v in &m.variants {
+            assert!(v.calibration.declared);
+            assert_eq!(v.calibration.temperature, Some(2.351_095_812_567_217_4));
+            assert_eq!(v.vectors.len(), 8);
+        }
+        let bf16 = m
+            .variant("bf16")
+            .unwrap()
+            .calibration
+            .evidence
+            .clone()
+            .unwrap();
+        assert!(bf16.contains("not recomputed for bf16"), "{bf16}");
+        let list: Vec<String> = reg.names();
+        assert!(list.contains(&"jaredpalmer/kev-0.8b".to_string()));
+    }
+
+    #[test]
     fn empty_registry_is_lazy_and_valid() {
         assert!(
             Registry::builtin().unwrap().default_entry().is_none()
                 || !Registry::builtin().unwrap().entries().is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod quantized_lint_tests {
+    use super::*;
+    use crate::models::manifest::{CalibrationDecl, Variant};
+
+    /// The built-in registry with the default variant of the default entry changed by `f`.
+    fn with_default_variant(f: impl FnOnce(&mut Variant)) -> Registry {
+        let mut reg = Registry::builtin().unwrap().clone();
+        let (name, revision) = reg.default.clone().unwrap();
+        let m = reg
+            .entries
+            .iter_mut()
+            .find(|m| m.name == name && m.revision == revision)
+            .unwrap();
+        let dtype = m.default_dtype.clone();
+        f(m.variants.iter_mut().find(|v| v.dtype == dtype).unwrap());
+        reg
+    }
+
+    fn lint_after_changing_evidence(replace: impl Fn(&str) -> String) -> Result<(), String> {
+        with_default_variant(|v| {
+            let old = v.calibration.evidence.clone().unwrap();
+            v.calibration.evidence = Some(replace(&old));
+        })
+        .lint()
+    }
+
+    #[test]
+    fn the_default_dtype_is_pinned_to_q8_0() {
+        // spec 009 AC-7: the default of `from_pretrained()` is the measured Q8_0. Changing it is
+        // a decision (a new D, with its own measure), and this test is where it is written down.
+        let reg = Registry::builtin().unwrap();
+        let m = reg.default_entry().unwrap();
+        assert_eq!(m.default_dtype, "q8_0");
+        let v = m.variant("q8_0").unwrap();
+        assert!(v.calibration.declared);
+        assert_eq!(v.calibration.temperature, Some(1.7497));
+    }
+
+    #[test]
+    fn quantized_evidence_names_dtype_and_ns() {
+        // the real evidence passes ...
+        Registry::builtin().unwrap().lint().unwrap();
+        // ... and each missing piece is refused, naming what is missing
+        let err = lint_after_changing_evidence(|e| e.replace("q8_0", "the variant")).unwrap_err();
+        assert!(err.contains("must name its dtype"), "{err}");
+        // the v2 evidence gives four sizes (fit, test, two out-of-distribution sets): one left is not enough
+        let err = lint_after_changing_evidence(|e| e.replace("n=", "rows ")).unwrap_err();
+        assert!(err.contains("two sample sizes"), "{err}");
+        let err = lint_after_changing_evidence(|e| {
+            e.replace("n=2677", "2677 rows")
+                .replace("n=1200", "1200 rows")
+                .replace("n=900", "900 rows")
+        })
+        .unwrap_err();
+        assert!(err.contains("two sample sizes"), "{err}");
+        let err =
+            lint_after_changing_evidence(|e| e.replace("ECE", "calibration error")).unwrap_err();
+        assert!(err.contains("ECE before and after"), "{err}");
+        let err = lint_after_changing_evidence(|e| e.replace("->", "became")).unwrap_err();
+        assert!(err.contains("ECE before and after"), "{err}");
+    }
+
+    #[test]
+    fn full_precision_variants_are_not_held_to_the_quantized_rule() {
+        // Kev's f32 and bf16 evidence gives no sample sizes and no ECE, and the registry is fine
+        let reg = Registry::builtin().unwrap();
+        let kev = reg
+            .entries()
+            .iter()
+            .find(|m| m.name == "jaredpalmer/kev-0.8b")
+            .unwrap();
+        assert!(
+            kev.variants
+                .iter()
+                .all(|v| !recipes::is_quantized(&v.dtype))
+        );
+        reg.lint().unwrap();
+    }
+
+    #[test]
+    fn the_default_variant_of_the_default_entry_must_declare_a_calibration() {
+        let reg = with_default_variant(|v| {
+            v.calibration = CalibrationDecl {
+                declared: false,
+                temperature: None,
+                evidence: None,
+            };
+        });
+        let err = reg.lint().unwrap_err();
+        assert!(err.contains("must declare a calibration"), "{err}");
     }
 }

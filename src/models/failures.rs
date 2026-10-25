@@ -3,6 +3,8 @@
 
 use std::fmt;
 
+use super::recipes;
+
 /// A self-check vector disagreed with the model (surfaces as `ModelVerificationError`).
 #[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq)]
@@ -216,12 +218,20 @@ impl fmt::Display for ArgFailure {
             }
             ArgFailure::Device { got } => write!(
                 f,
-                "device '{got}' is not supported; supported: 'cpu' (GPU support is planned)"
+                "{}",
+                crate::engine::device::DeviceParseError { given: got.clone() }
             ),
-            ArgFailure::Dtype { got } => write!(
-                f,
-                "'{got}' is not a known dtype; known: f32, bf16, q8_0 (float32 and bfloat16 are accepted as synonyms)"
-            ),
+            ArgFailure::Dtype { got } => {
+                write!(
+                    f,
+                    "'{got}' is not a known dtype; known: {} (float32 and bfloat16 are accepted as synonyms)",
+                    recipes::DTYPES.join(", ")
+                )?;
+                if got == "int8" {
+                    write!(f, "; 'q8_0' is the 8-bit integer format")?;
+                }
+                Ok(())
+            }
             ArgFailure::RevisionForLocal => write!(
                 f,
                 "revision cannot be used with a local folder: the revision of a local model is the one declared in its manifest"

@@ -4,8 +4,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::json_strict::Json;
-use crate::models::convert::{Converted, Converter};
+use crate::error::{Error, Result};
+use crate::models::convert::{ConvertJob, Converted, Converter};
 use crate::models::incompat::Incompat;
 
 /// Writes `gguf` as `model.gguf`, or fails.
@@ -32,24 +32,26 @@ impl FakeConverter {
 
 impl Converter for FakeConverter {
     fn kinds(&self) -> Vec<String> {
-        vec!["hf-lora".to_string(), "hf-full".to_string()]
+        vec!["hf-lora".to_string()]
     }
 
     fn version(&self) -> String {
         self.version.clone()
     }
 
-    fn convert(&self, _raw: &Json, out_dir: &Path) -> Result<Converted, Incompat> {
+    fn convert(&self, _job: &ConvertJob<'_>, out_dir: &Path) -> Result<Converted> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail {
-            return Err(Incompat::ConversionFailed {
+            return Err(Error::IncompatibleModel(Incompat::ConversionFailed {
                 detail: "the fake converter was told to fail".to_string(),
-            });
+            }));
         }
         std::fs::write(out_dir.join("model.gguf"), &self.gguf).unwrap();
         Ok(Converted {
             model: "model.gguf".into(),
             head: None,
+            sha256: None,
+            size: None,
         })
     }
 }

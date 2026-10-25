@@ -104,53 +104,145 @@ pub fn check(
         }
     }
 
-    if let HeadSpec::Letters {
-        choice_targets,
-        yes_no,
-        ..
-    } = &manifest.head
-    {
-        let mut targets: Vec<&Target> = choice_targets.iter().collect();
-        if let Some((no, yes)) = yes_no {
-            targets.push(no);
-            targets.push(yes);
+    let targets: Vec<&Target> = match &manifest.head {
+        HeadSpec::Letters {
+            choice_targets,
+            yes_no,
+            ..
+        } => {
+            let mut all: Vec<&Target> = choice_targets.iter().collect();
+            if let Some((no, yes)) = yes_no {
+                all.push(no);
+                all.push(yes);
+            }
+            all
         }
-        for (i, t) in targets.iter().enumerate() {
-            if u64::from(t.id) >= n_vocab {
-                return Err(Incompat::LettersTarget {
-                    label: t.label.clone(),
-                    id: t.id,
-                    detail: format!("the id is outside the vocabulary (size {n_vocab})"),
-                });
-            }
-            if let Some(other) = targets.iter().take(i).find(|o| o.id == t.id) {
-                return Err(Incompat::LettersTarget {
-                    label: t.label.clone(),
-                    id: t.id,
-                    detail: format!("the id is already used by '{}'", other.label),
-                });
-            }
+        HeadSpec::AnswerLetters { letters, .. } => letters.iter().collect(),
+        HeadSpec::KeyLogProb { .. } | HeadSpec::Pointer { .. } => Vec::new(),
+    };
+    check_targets(&tk, &targets, n_vocab, &shown)?;
+    check_control_tokens(&tk, &manifest.tokenizer.control_tokens)
+}
+
+/// Every answer target is below the vocabulary size, has an id of its own, and is encoded alone
+/// (no leading space, no special token) as exactly the one token the manifest says.
+fn check_targets(
+    tk: &Tokenizer,
+    targets: &[&Target],
+    n_vocab: u64,
+    shown: &str,
+) -> Result<(), Incompat> {
+    for (i, t) in targets.iter().enumerate() {
+        if u64::from(t.id) >= n_vocab {
+            return Err(Incompat::LettersTarget {
+                label: t.label.clone(),
+                id: t.id,
+                detail: format!("the id is outside the vocabulary (size {n_vocab})"),
+            });
         }
-        for t in targets {
-            let ids = ids_of(&tk, &t.label).map_err(unreadable)?;
-            if ids.len() != 1 {
-                return Err(Incompat::LettersLabelNotSingle {
-                    label: t.label.clone(),
-                    ids,
-                });
-            }
-            if ids.first() != Some(&t.id) {
-                return Err(Incompat::LettersTarget {
-                    label: t.label.clone(),
-                    id: t.id,
-                    detail: format!(
-                        "the tokenizer encodes the label to id {:?}, not {}",
-                        ids.first(),
-                        t.id
-                    ),
-                });
-            }
+        if let Some(other) = targets.iter().take(i).find(|o| o.id == t.id) {
+            return Err(Incompat::LettersTarget {
+                label: t.label.clone(),
+                id: t.id,
+                detail: format!("the id is already used by '{}'", other.label),
+            });
+        }
+    }
+    for t in targets {
+        let ids = ids_of(tk, &t.label).map_err(|detail| Incompat::TokenizerUnreadable {
+            path: shown.to_string(),
+            detail,
+        })?;
+        if ids.len() != 1 {
+            return Err(Incompat::LettersLabelNotSingle {
+                label: t.label.clone(),
+                ids,
+            });
+        }
+        if ids.first() != Some(&t.id) {
+            return Err(Incompat::LettersTarget {
+                label: t.label.clone(),
+                id: t.id,
+                detail: format!(
+                    "the tokenizer encodes the label to id {:?}, not {}",
+                    ids.first(),
+                    t.id
+                ),
+            });
         }
     }
     Ok(())
+}
+
+/// Whether a normalizer (as JSON) leaves the text as it is for the purpose of finding control
+/// tokens: none, canonical composition (which cannot build the characters they are made of from
+/// others), or a sequence of those.
+fn keeps_text(normalizer: &serde_json::Value) -> bool {
+    match normalizer.get("type").and_then(serde_json::Value::as_str) {
+        Some("NFC") => true,
+        Some("Sequence") => normalizer
+            .get("normalizers")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|items| items.iter().all(keeps_text)),
+        _ => normalizer.is_null(),
+    }
+}
+
+/// The list of control tokens of the manifest is the set of added tokens of the tokenizer,
+/// special or not: the `tokenizers` crate extracts every added token from the text it encodes,
+/// so one missing from the list would still be able to forge the structure of a prompt.
+fn check_control_tokens(tk: &Tokenizer, listed: &[String]) -> Result<(), Incompat> {
+    if listed.is_empty() {
+        return Ok(());
+    }
+    // The neutralisation looks for the exact text of a token. It only protects if the tokenizer
+    // looks for the same: no normalizer that rewrites text before the tokens are found, and no
+    // added token matched after normalisation or with the spaces around it eaten.
+    let normalizer = tk
+        .get_normalizer()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|e| Incompat::ControlTokenMatching {
+            detail: format!("the normalizer cannot be read: {e}"),
+        })?;
+    if let Some(n) = normalizer.as_ref().filter(|n| !keeps_text(n)) {
+        return Err(Incompat::ControlTokenMatching {
+            detail: format!("the normalizer {n} may rewrite text before tokens are found"),
+        });
+    }
+    if let Some(t) = tk
+        .get_added_tokens_decoder()
+        .into_values()
+        .find(|t| t.normalized || t.lstrip || t.rstrip || t.single_word)
+    {
+        return Err(Incompat::ControlTokenMatching {
+            detail: format!(
+                "the added token {:?} is matched with normalized={}, lstrip={}, rstrip={}, single_word={}",
+                t.content, t.normalized, t.lstrip, t.rstrip, t.single_word
+            ),
+        });
+    }
+    let mut added: Vec<String> = tk
+        .get_added_tokens_decoder()
+        .into_values()
+        .map(|t| t.content)
+        .collect();
+    added.sort();
+    let mut listed: Vec<String> = listed.to_vec();
+    listed.sort();
+    let unlisted: Vec<String> = added
+        .iter()
+        .filter(|t| listed.binary_search(t).is_err())
+        .cloned()
+        .collect();
+    let unknown: Vec<String> = listed
+        .iter()
+        .filter(|t| added.binary_search(t).is_err())
+        .cloned()
+        .collect();
+    if unlisted.is_empty() && unknown.is_empty() {
+        Ok(())
+    } else {
+        Err(Incompat::ControlTokensMismatch { unlisted, unknown })
+    }
 }

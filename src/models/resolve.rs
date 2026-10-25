@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use super::failures::ArgFailure;
 use super::incompat::Incompat;
 use super::manifest::Manifest;
+use super::recipes;
 use super::registry::Registry;
+use crate::engine::device::DeviceRequest;
 use crate::error::{Error, Result};
 
 /// File name of the manifest in a local model folder.
@@ -60,14 +62,11 @@ fn arg(a: ArgFailure) -> Error {
 /// # Errors
 /// [`ArgFailure::Dtype`] for a name outside the global list.
 pub fn canonical_dtype(given: &str) -> Result<&'static str> {
-    match given {
-        "f32" | "float32" => Ok("f32"),
-        "bf16" | "bfloat16" => Ok("bf16"),
-        "q8_0" => Ok("q8_0"),
-        other => Err(arg(ArgFailure::Dtype {
-            got: other.to_string(),
-        })),
-    }
+    recipes::canonical(given).ok_or_else(|| {
+        arg(ArgFailure::Dtype {
+            got: given.to_string(),
+        })
+    })
 }
 
 /// Check the argument-only rules and choose the model.
@@ -79,7 +78,7 @@ pub fn resolve<'r>(
     sel: &Selection,
     registry: &'r Registry,
 ) -> Result<(Target<'r>, Option<&'static str>)> {
-    if sel.device != "cpu" {
+    if DeviceRequest::parse(&sel.device).is_err() {
         return Err(arg(ArgFailure::Device {
             got: sel.device.clone(),
         }));
@@ -145,4 +144,44 @@ pub fn resolve<'r>(
         }
     };
     Ok((target, dtype))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::Error;
+
+    fn message(given: &str) -> String {
+        match canonical_dtype(given) {
+            Err(Error::ModelArgument(a)) => a.to_string(),
+            other => panic!("{given:?}: expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn canonical_dtype_accepts_the_canonical_names_and_two_synonyms() {
+        assert_eq!(canonical_dtype("f32").unwrap(), "f32");
+        assert_eq!(canonical_dtype("float32").unwrap(), "f32");
+        assert_eq!(canonical_dtype("bfloat16").unwrap(), "bf16");
+        assert_eq!(canonical_dtype("q8_0").unwrap(), "q8_0");
+    }
+
+    #[test]
+    fn unknown_dtype_names_list_the_supported_ones() {
+        // spec 009 AC-1: "int8", "q4", "fp16" and a differently written "Q8_0" are all refused
+        for bad in ["int8", "q4", "fp16", "Q8_0"] {
+            let m = message(bad);
+            assert!(m.contains(&format!("'{bad}' is not a known dtype")), "{m}");
+            for name in recipes::DTYPES {
+                assert!(m.contains(name), "{m} should list {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn int8_is_pointed_to_q8_0_and_nothing_else_is() {
+        assert!(message("int8").contains("'q8_0' is the 8-bit integer format"));
+        assert!(!message("q4").contains("8-bit integer"));
+        assert!(!message("Q8_0").contains("8-bit integer"));
+    }
 }

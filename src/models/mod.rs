@@ -13,12 +13,15 @@ pub mod incompat;
 pub mod llama_backend;
 pub mod load;
 pub mod manifest;
+pub mod materialize;
+pub mod recipes;
 pub mod record;
 pub mod registry;
 pub mod resolve;
 pub mod tokenizer_check;
 pub mod tolerance;
 pub mod validate;
+pub mod variants;
 pub mod vectors;
 pub mod verify;
 

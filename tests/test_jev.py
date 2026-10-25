@@ -52,12 +52,12 @@ def scripted(calibrated: bool = True) -> Jev:
 def test_public_surface_is_exactly_the_documented_one() -> None:
     assert sorted(archai_jev.__all__) == sorted(
         [
-            "Answer", "Answers", "Choice", "ChoiceAnswer", "IncompatibleModelError",
-            "InferenceError", "InvalidQuestionError", "InvalidStateError", "JSONValue", "Jev", "JevError",
+            "Answer", "Answers", "CacheInfo", "CalibrationError", "Choice", "ChoiceAnswer", "DeviceFallbackWarning", "DeviceInfo", "DeviceUnavailableError", "IncompatibleModelError",
+            "InferenceError", "InvalidDatasetError", "InvalidQuestionError", "InvalidStateError", "JSONValue", "Jev", "JevError",
             "ModelDownloadError", "ModelInfo", "ModelVerificationError", "Noul",
-            "NumericalError", "Question", "Score", "ScoreAnswer", "State",
-            "UnsupportedRequestError", "YesNo", "YesNoAnswer", "calibrated_softmax",
-            "list_models", "render_state",
+            "NumericalError", "Question", "Score", "ScoreAnswer", "State", "TemperatureFit",
+            "UnsupportedRequestError", "VariantInfo", "YesNo", "YesNoAnswer", "calibrated_softmax",
+            "available_devices", "compiled_backends", "fit_temperature", "list_models", "render_state",
         ]
     )  # fmt: skip
     assert "_core" not in archai_jev.__all__
@@ -164,7 +164,7 @@ def test_input_errors_are_typed_and_happen_before_the_scorer() -> None:
         with pytest.raises(TypeError):
             jev.ask(STATE, not_a_mapping)
     with pytest.raises(TypeError):
-        jev.ask_many(5, QUESTIONS)  # type: ignore[arg-type]
+        jev.ask_many(5, QUESTIONS)  # type: ignore[call-overload]
     assert scorer.calls == 0
     with pytest.raises(
         InvalidQuestionError,

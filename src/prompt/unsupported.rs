@@ -39,6 +39,31 @@ pub enum Unsupported {
         j: usize,
         text: String,
     },
+    /// The tokens of a key are the start of the tokens of another one (spec 010 section 2): the
+    /// score of a key is a sum of log-probabilities, so the longer one could never win.
+    KeyStartsAnother {
+        question: String,
+        /// Index and text of the shorter key (the prefix).
+        short: usize,
+        short_key: String,
+        /// Index and text of the longer key.
+        long: usize,
+        long_key: String,
+    },
+    /// An option key that the tokenizer turns into no token at all (spec 010).
+    KeyWithoutTokens {
+        question: String,
+        option: usize,
+        key: String,
+    },
+    /// An option key of more tokens than the head scores (spec 010).
+    KeyTooLong {
+        question: String,
+        option: usize,
+        key: String,
+        max: u64,
+        got: u64,
+    },
     /// The question is not one of the tasks the model was trained for (spec 006c section 3).
     TaskMismatch {
         question: String,
@@ -47,6 +72,25 @@ pub enum Unsupported {
     },
     /// The tokenizer failed on a piece of text (an internal fault, not the user's mistake).
     Untokenizable { segment: String, cause: String },
+    /// A question with fewer options than the model needs to choose among (spec 010b).
+    TooFewOptions {
+        question: String,
+        min: u64,
+        got: u64,
+    },
+    /// A text the model has to read is empty once its edges are stripped (spec 010b).
+    EmptyText { question: String, what: String },
+    /// A text the model reads as plain text was given as a structured value (spec 010b): the
+    /// format of the model has no way to write it, so nothing is invented.
+    NotText { question: String, what: String },
+    /// Two options with the same description: the model sees only letters and descriptions, so
+    /// it could not tell them apart (spec 010b).
+    DuplicateDescription {
+        question: String,
+        a: String,
+        b: String,
+        description: String,
+    },
 }
 
 impl fmt::Display for Unsupported {
@@ -94,6 +138,41 @@ impl fmt::Display for Unsupported {
                 "question {}: options {i} and {j} read exactly the same to the model after normalization (\"{text}\"); make them distinguishable",
                 quote(question)
             ),
+            Unsupported::KeyStartsAnother {
+                question,
+                short,
+                short_key,
+                long,
+                long_key,
+            } => write!(
+                f,
+                "question {}: the key {} of option {long} starts with the tokens of the key {} of option {short}, so the model could never choose it; use keys that do not start with one another (letters, or numbers of the same width such as 01, 02, ..., 10)",
+                quote(question),
+                quote(long_key),
+                quote(short_key)
+            ),
+            Unsupported::KeyWithoutTokens {
+                question,
+                option,
+                key,
+            } => write!(
+                f,
+                "question {}: the key {} of option {option} is turned into no token by the tokenizer; use another key",
+                quote(question),
+                quote(key)
+            ),
+            Unsupported::KeyTooLong {
+                question,
+                option,
+                key,
+                max,
+                got,
+            } => write!(
+                f,
+                "question {}: the key {} of option {option} is {got} tokens long, but the model scores keys of at most {max}; use a shorter key",
+                quote(question),
+                quote(key)
+            ),
             Unsupported::TaskMismatch {
                 question,
                 model,
@@ -106,6 +185,34 @@ impl fmt::Display for Unsupported {
             Unsupported::Untokenizable { segment, cause } => {
                 write!(f, "cannot tokenize the {segment}: {cause}")
             }
+            Unsupported::TooFewOptions { question, min, got } => write!(
+                f,
+                "question {}: the model needs at least {min} options to choose among, got {got}",
+                quote(question)
+            ),
+            Unsupported::EmptyText { question, what } => write!(
+                f,
+                "question {}: the {what} is empty once its leading and trailing whitespace is removed; the model needs text to read",
+                quote(question)
+            ),
+            Unsupported::NotText { question, what } => write!(
+                f,
+                "question {}: the {what} is a list or an object, but this model reads plain text there; write it as a string",
+                quote(question)
+            ),
+            Unsupported::DuplicateDescription {
+                question,
+                a,
+                b,
+                description,
+            } => write!(
+                f,
+                "question {}: the options {} and {} have the same description ({}), and the model sees only letters and descriptions, so it could not tell them apart; give each its own description",
+                quote(question),
+                quote(a),
+                quote(b),
+                quote(description)
+            ),
         }
     }
 }
@@ -156,6 +263,17 @@ mod tests {
         assert!(
             dup.to_string()
                 .contains("options 0 and 2 read exactly the same")
+        );
+        let prefix = Unsupported::KeyStartsAnother {
+            question: "q".into(),
+            short: 1,
+            short_key: "option_1".into(),
+            long: 10,
+            long_key: "option_10".into(),
+        };
+        assert_eq!(
+            prefix.to_string(),
+            "question \"q\": the key \"option_10\" of option 10 starts with the tokens of the key \"option_1\" of option 1, so the model could never choose it; use keys that do not start with one another (letters, or numbers of the same width such as 01, 02, ..., 10)"
         );
         let tok = Unsupported::Untokenizable {
             segment: "state".into(),

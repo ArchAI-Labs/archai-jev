@@ -1,6 +1,6 @@
 [package]
 name = "archai_jev"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "High-performance Rust runtime for System One decision models (typed answers with calibrated probabilities)."
 license = "Apache-2.0"
@@ -38,6 +38,43 @@ tempfile = "3"
 [features]
 # Fake backend, fake converter, tiny checkpoint builder and test server. Off in release wheels.
 testing = ["dep:tempfile"]
+# Study rows of spec 009: the K-quant dtypes (`q6_k`, `q5_k_m`, `q4_k_m`) are accepted with a
+# permissive recipe and a tolerance that refuses nothing, so that they can be MEASURED. Never in
+# release wheels: a dtype is a real name only after it passes the admission gate of the spec.
+quant-study = []
+# GPU backends of llama.cpp (spec 011). Off in every wheel on PyPI, which are CPU-only; each is a
+# build from source (`maturin build --release --features cuda`, see docs/gpu.md) or a wheel
+# published for that backend. They only forward to the wrapper, so they add no dependency.
+# `cuda`: NVIDIA, needs the CUDA Toolkit (12.8 or later for Blackwell `sm_120`) and, on Windows,
+# `CUDA_PATH_V12_x` and `CMAKE_CUDA_ARCHITECTURES` in the environment.
+cuda = ["llama-cpp-2/cuda"]
+# `cuda-no-vmm`: the same without the import of `nvcuda.dll`, so that `import archai_jev` also
+# works on a machine with no NVIDIA driver (measured in the spike S14). It includes `cuda`: the
+# backend list of the library reads `cuda`, and without it this build reported no CUDA at all
+# (found by the first run of gpu-build.yml).
+cuda-no-vmm = ["cuda", "llama-cpp-2/cuda-no-vmm"]
+# `vulkan`: NVIDIA, AMD and Intel; needs the Vulkan SDK (`VULKAN_SDK`) and, on Windows,
+# `CMAKE_GENERATOR=Ninja` with the MSVC environment (the Visual Studio generator fails).
+vulkan = ["llama-cpp-2/vulkan"]
+# `metal`: Apple GPUs, macOS only; needs `GGML_METAL=ON` in the environment because
+# `.cargo/config.toml` switches it off, and `build.rs` stops the build if it is not set.
+metal = ["llama-cpp-2/metal"]
+
+[[test]]
+name = "spark_letters_header"
+required-features = ["testing"]
+
+[[test]]
+name = "spark_letters_ids"
+required-features = ["testing"]
+
+[[test]]
+name = "spark_letters_real"
+required-features = ["testing"]
+
+[[test]]
+name = "spark_letters_bench"
+required-features = ["testing"]
 
 [[test]]
 name = "golden_ids"
@@ -52,6 +89,18 @@ name = "default_model"
 required-features = ["testing"]
 
 [[test]]
+name = "quantization_dataset_ids"
+required-features = ["testing"]
+
+[[test]]
+name = "quantized_vectors"
+required-features = ["testing"]
+
+[[test]]
+name = "v2_parity"
+required-features = ["testing"]
+
+[[test]]
 name = "default_calibration"
 required-features = ["testing"]
 
@@ -61,6 +110,18 @@ required-features = ["testing"]
 
 [[test]]
 name = "prompt_props"
+required-features = ["testing"]
+
+[[test]]
+name = "kev_conversion"
+required-features = ["testing"]
+
+[[test]]
+name = "kev_parity"
+required-features = ["testing"]
+
+[[test]]
+name = "kev_bench"
 required-features = ["testing"]
 
 [profile.release]

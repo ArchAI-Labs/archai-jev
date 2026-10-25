@@ -79,6 +79,14 @@ pub enum Incompat {
     NoTolerance {
         family: String,
         dtype: String,
+        reference: &'static str,
+    },
+    /// The device asked for is there, but this model has no verified tolerance on its backend.
+    NoDeviceRow {
+        family: String,
+        dtype: String,
+        backend: String,
+        verified: Vec<String>,
     },
     SourceWithoutConverter {
         kind: String,
@@ -111,6 +119,9 @@ pub enum Incompat {
     Uncalibrated {
         name: String,
         dtype: String,
+        /// Another variant of the same manifest that does declare a calibration: its dtype
+        /// and temperature. Named in the message so nobody copies it over.
+        other_declared: Option<(String, f64)>,
     },
     // ---- stage 3: files ----
     FileMissing {
@@ -198,6 +209,20 @@ pub enum Incompat {
         label: String,
         ids: Vec<u32>,
     },
+    /// The tokenizer matches its control tokens in a way the neutralisation cannot follow: the
+    /// text is normalised first, or an added token is matched after normalisation or with its
+    /// neighbouring spaces eaten.
+    ControlTokenMatching {
+        /// What is wrong, naming the token or the normalizer.
+        detail: String,
+    },
+    /// The control tokens a manifest lists are not the added tokens of its `tokenizer.json`.
+    ControlTokensMismatch {
+        /// In the tokenizer but not in the manifest: text could still produce them.
+        unlisted: Vec<String>,
+        /// In the manifest but not in the tokenizer.
+        unknown: Vec<String>,
+    },
     // ---- stage 6: head weights ----
     HeadWeights {
         detail: String,
@@ -205,6 +230,24 @@ pub enum Incompat {
     // ---- conversion (018) ----
     ConversionFailed {
         detail: String,
+    },
+    /// An original file of a checkpoint (safetensors, `config.json`, adapter, tokenizer files)
+    /// is not valid. `file` is the role or path, `detail` says what is wrong and where.
+    SourceFile {
+        file: String,
+        detail: String,
+    },
+    /// The checkpoint uses something the converter does not support (and so does not guess).
+    SourceUnsupported {
+        what: String,
+        detail: String,
+    },
+    /// A parameter of the manifest's `architecture` differs from the one in the files.
+    ArchParamMismatch {
+        param: String,
+        manifest: String,
+        file: String,
+        got: String,
     },
 }
 
@@ -297,9 +340,23 @@ impl fmt::Display for Incompat {
                 f,
                 "manifest template '{got}' does not match family '{family}', which needs '{expected}'"
             ),
-            I::NoTolerance { family, dtype } => write!(
+            I::NoTolerance {
+                family,
+                dtype,
+                reference,
+            } => write!(
                 f,
-                "no verification tolerance is defined for family '{family}' with dtype '{dtype}', so its numbers cannot be verified; the variant is refused (tolerances are in the library, not in manifests)"
+                "no verification tolerance is defined for family '{family}' with dtype '{dtype}' and reference '{reference}', so its numbers cannot be verified; the variant is refused (tolerances are in the library, not in manifests)"
+            ),
+            I::NoDeviceRow {
+                family,
+                dtype,
+                backend,
+                verified,
+            } => write!(
+                f,
+                "family '{family}' with dtype '{dtype}' has no verified tolerance on the '{backend}' backend, so it is not allowed to answer there; the backends verified for this model are: {}; use one of them, or device='auto'",
+                list(verified)
             ),
             I::SourceWithoutConverter { kind } => write!(
                 f,
@@ -328,10 +385,23 @@ impl fmt::Display for Incompat {
                 "head.d_model is {d_model} but architecture.n_embd is {n_embd}; the head reads the backbone's hidden state, so they must be equal"
             ),
             I::BadTasks { index, detail } => write!(f, "tasks[{index}] is not valid: {detail}"),
-            I::Uncalibrated { name, dtype } => write!(
-                f,
-                "model '{name}' ({dtype}) has no declared calibration: pass temperature=<value> (see archai_jev.fit_temperature) or allow_uncalibrated=True to accept uncalibrated probabilities (answers will carry calibrated=False)"
-            ),
+            I::Uncalibrated {
+                name,
+                dtype,
+                other_declared,
+            } => {
+                write!(
+                    f,
+                    "model '{name}' ({dtype}) has no declared calibration: pass temperature=<value> (fit one on your data with Jev.calibrate() or archai_jev.fit_temperature) or allow_uncalibrated=True to accept uncalibrated probabilities (answers will carry calibrated=False)"
+                )?;
+                if let Some((other, t)) = other_declared {
+                    write!(
+                        f,
+                        "; the temperature {t} declared for '{other}' does not transfer to '{dtype}': a different quantisation is a different model with its own calibration"
+                    )?;
+                }
+                Ok(())
+            }
             I::FileMissing { path } => write!(f, "file '{path}' does not exist"),
             I::SizeMismatch {
                 path,
@@ -443,10 +513,36 @@ impl fmt::Display for Incompat {
                 "answer label '{label}' encodes to {} tokens {ids:?}, expected exactly one token",
                 ids.len()
             ),
+            I::ControlTokensMismatch { unlisted, unknown } => write!(
+                f,
+                "tokenizer.control_tokens must be exactly the added tokens of tokenizer.json; not listed: {}; listed but not in the tokenizer: {}",
+                list(unlisted),
+                list(unknown)
+            ),
+            I::ControlTokenMatching { detail } => write!(
+                f,
+                "the tokenizer matches its control tokens in a way that exact-text neutralisation cannot follow: {detail}"
+            ),
             I::HeadWeights { detail } => {
                 write!(f, "the decision head weights are not valid: {detail}")
             }
             I::ConversionFailed { detail } => write!(f, "checkpoint conversion failed: {detail}"),
+            I::SourceFile { file, detail } => {
+                write!(f, "the checkpoint file '{file}' is not valid: {detail}")
+            }
+            I::ArchParamMismatch {
+                param,
+                manifest,
+                file,
+                got,
+            } => write!(
+                f,
+                "architecture.{param} is {manifest} in the manifest but {got} in {file}; the manifest must describe the files it converts"
+            ),
+            I::SourceUnsupported { what, detail } => write!(
+                f,
+                "this checkpoint uses {what}, which is not supported yet: {detail}; the converter does not guess"
+            ),
         }
     }
 }

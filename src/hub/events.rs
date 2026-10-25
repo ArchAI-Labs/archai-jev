@@ -29,6 +29,18 @@ pub enum Event {
     },
     /// A warning (restrictive license, notice of the model, cache not writable...).
     Warning(String),
+    /// A conversion of original files into a GGUF starts: how many tensors, how many bytes of
+    /// GGUF it will write, where, and which type.
+    ConvertStart {
+        tensors: u64,
+        bytes: u64,
+        destination: String,
+        dtype: String,
+    },
+    /// A conversion is under way (rate-limited): tensors done of the total.
+    ConvertProgress { done: u64, total: u64 },
+    /// A conversion finished: how long it took and the size of the GGUF.
+    ConvertDone { seconds: f64, bytes: u64 },
 }
 
 /// Receives events.

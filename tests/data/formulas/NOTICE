@@ -1,0 +1,10 @@
+archai-jev test data: formula vectors
+=====================================
+
+The numbers in formulas.jsonl are outputs of the formulas of Kev, which is licensed under the
+Apache License, Version 2.0:
+
+  Kev        https://github.com/jaredpalmer/kev        (Apache-2.0), commit 67117d85
+
+The input vectors were written by the authors of archai-jev and are covered by the licence of this
+repository (Apache-2.0). No model weights are included.

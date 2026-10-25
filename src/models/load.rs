@@ -6,20 +6,26 @@ use std::sync::Arc;
 
 use super::backend::{Backend, ValidatedCheckpoint};
 use super::calibration_gate::{self, CalibrationSource};
-use super::convert::{Converter, safe_component};
+use super::convert::{ConvertJob, Converter, SourceFiles};
+use super::failures::ArgFailure;
 use super::files::FileEntry;
 use super::gguf;
 use super::hash::{sha256_file, sha256_hex};
 use super::head::{HeadReader, check_pointer};
 use super::incompat::Incompat;
 use super::manifest::{HeadSpec, Manifest, ManifestOrigin, Source, Variant};
+use super::materialize::{self, Materialized};
 use super::record::{self, Record, Stamp};
 use super::registry::Registry;
 use super::resolve::{Selection, Target, resolve};
 use super::tokenizer_check;
 use super::tolerance;
 use super::validate;
+use super::variants::{VariantData, variants_of};
 use super::verify::run_selfcheck;
+use crate::engine::device::{
+    BackendKind, DeviceInfo, DeviceProbe, DeviceRequest, Refusal, Selected, select,
+};
 use crate::error::{Error, Result};
 use crate::hub::blobs::BlobStore;
 use crate::hub::cache::Layout;
@@ -47,6 +53,8 @@ pub struct Context<'a> {
     pub hub: &'a HubConfig,
     /// The inference engine.
     pub backend: &'a dyn Backend,
+    /// The backends the build contains and the devices the machine has (spec 011).
+    pub devices: &'a dyn DeviceProbe,
     /// The network.
     pub transport: &'a dyn Transport,
     /// Receives progress and notices.
@@ -86,10 +94,21 @@ pub struct ModelData {
     pub max_context: u64,
     /// Ids of the declared tasks, if the model has a closed task set.
     pub tasks: Option<Vec<String>>,
+    /// The most options of a question the head answers (`None`: no limit of its own).
+    pub max_options: Option<u64>,
+    /// The most tokens of an option key (only for a head that scores keys).
+    pub max_key_tokens: Option<u64>,
     /// Notice for the user.
     pub notice: Option<String>,
     /// `registry` or `local`.
     pub source: &'static str,
+    /// Every variant the manifest offers (not only the one loaded).
+    pub variants: Vec<VariantData>,
+    /// The device the model runs on, as `device=` names it: `cpu`, `cuda:0`, `vulkan:1`.
+    pub device: String,
+    /// Why the CPU is in use although `device="auto"` wanted a GPU, when it is not simply that
+    /// the build has no GPU backend. `None` for anything else.
+    pub fallback: Option<String>,
 }
 
 /// A model ready to answer.
@@ -104,10 +123,50 @@ fn incompat(i: Incompat) -> Error {
     Error::IncompatibleModel(i)
 }
 
+/// A converted model of this call: how it was made and what the cache recorded about it.
+struct Converted<'a> {
+    converter: &'a dyn Converter,
+    job: ConvertJob<'a>,
+    out: PathBuf,
+    done: Materialized,
+    /// Converted in this very call: its SHA-256 was computed while it was written, so it is
+    /// not read again to be compared with itself.
+    fresh: bool,
+}
+
+impl Converted<'_> {
+    /// The name of the GGUF in the verification record.
+    fn stamp_name(&self) -> String {
+        format!(
+            "converted:{}",
+            self.done
+                .model
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        )
+    }
+
+    /// Whether the GGUF in the cache still has the SHA-256 the conversion recorded.
+    fn matches_record(&self) -> Result<bool> {
+        if self.fresh {
+            return Ok(true);
+        }
+        let (sha, _) = sha256_file(&self.done.model).map_err(|_| {
+            incompat(Incompat::FileMissing {
+                path: self.done.model.display().to_string(),
+            })
+        })?;
+        Ok(sha == self.done.sha256)
+    }
+}
+
 fn files_of<'m>(m: &'m Manifest, v: &'m Variant) -> Vec<&'m FileEntry> {
     let mut out = Vec::new();
-    if let Source::Gguf { file } = &v.source {
-        out.push(file);
+    match &v.source {
+        Source::Gguf { file } => out.push(file),
+        Source::HfLora(source) => out.extend(source.files()),
+        Source::Reserved { .. } => {}
     }
     out.push(&m.tokenizer.file);
     if let HeadSpec::Pointer { weights, .. } = &m.head {
@@ -208,48 +267,47 @@ fn verify_integrity(files: &[Located<'_>]) -> Result<()> {
     Ok(())
 }
 
-/// Run the converter into the cache once per (manifest, dtype, converter version).
-fn materialize(
-    converter: &dyn Converter,
-    raw: &crate::json_strict::Json,
-    out: &std::path::Path,
-) -> Result<PathBuf> {
-    let marker = out.join("DONE");
-    if let Ok(done) = std::fs::read_to_string(&marker) {
-        return Ok(out.join(done.trim()));
-    }
-    let fail = |detail: String| incompat(Incompat::ConversionFailed { detail });
-    let parent = out
-        .parent()
-        .ok_or_else(|| fail("no cache folder".to_string()))?;
-    std::fs::create_dir_all(parent).map_err(|e| fail(e.to_string()))?;
-    let tmp = parent.join(format!(
-        "{}.tmp-{}",
-        out.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).map_err(|e| fail(e.to_string()))?;
-    let converted = converter.convert(raw, &tmp).map_err(incompat)?;
-    let rel = converted.model.to_string_lossy().replace('\\', "/");
-    std::fs::write(tmp.join("DONE"), &rel).map_err(|e| fail(e.to_string()))?;
-    if std::fs::rename(&tmp, out).is_err() {
-        // another process finished first: use its result
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-    let done = std::fs::read_to_string(&marker).map_err(|e| fail(e.to_string()))?;
-    Ok(out.join(done.trim()))
-}
-
-/// Load a model: resolve, read and check the manifest, fetch and verify the files, check the
-/// structure, load the weights, self-check (first time only) and return the model.
+/// Load a model: resolve, read and check the manifest, choose the device, fetch and verify the
+/// files, check the structure, load the weights, self-check (first time only) and return the
+/// model.
+///
+/// With `device="auto"` a GPU that cannot be *used* (the engine fails on it: not enough memory,
+/// a driver error) is replaced by the CPU and the reason is reported in
+/// [`ModelData::fallback`]. A GPU whose numbers are *wrong* (the self-check fails) is never
+/// replaced: that is [`Error::ModelVerification`] (spec 011, section 2).
 ///
 /// # Errors
 /// See spec 005: [`Error::ModelArgument`], [`Error::IncompatibleModel`],
-/// [`Error::ModelDownload`], [`Error::ModelVerification`], [`Error::Cancelled`].
+/// [`Error::ModelDownload`], [`Error::ModelVerification`], [`Error::Cancelled`]; and
+/// [`Error::DeviceUnavailable`] for a named device that cannot be used.
 pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
+    let mut chosen: Option<DeviceInfo> = None;
+    match load_on(req, ctx, None, &mut chosen) {
+        Err(error @ Error::Inference { .. })
+            if DeviceRequest::parse(&req.selection.device) == Ok(DeviceRequest::Auto) =>
+        {
+            let Some(gpu) = chosen.filter(|d| d.backend != BackendKind::Cpu) else {
+                return Err(error);
+            };
+            let reason = format!(
+                "using the CPU instead of {} ({}): {error}",
+                gpu.name(),
+                gpu.description
+            );
+            load_on(req, ctx, Some(reason), &mut None)
+        }
+        other => other,
+    }
+}
+
+/// One attempt at loading. `cpu_instead` is the reason of a second attempt on the CPU after
+/// `device="auto"` could not use its GPU; `chosen` receives the device the attempt selected.
+fn load_on(
+    req: &LoadRequest,
+    ctx: &Context<'_>,
+    cpu_instead: Option<String>,
+    chosen: &mut Option<DeviceInfo>,
+) -> Result<LoadedModel> {
     // Stage 0: arguments and which model.
     let (target, dtype_arg) = resolve(&req.selection, ctx.registry)?;
 
@@ -283,15 +341,54 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
     let decision = calibration_gate::decide(
         &manifest.name,
         variant,
+        &manifest.variants,
         req.temperature,
         req.allow_uncalibrated,
     )?;
+
+    // Stage 2b: the device. Still no file and no network: a device that cannot be used is refused
+    // before anything is downloaded or hashed.
+    let request = if cpu_instead.is_some() {
+        DeviceRequest::Cpu
+    } else {
+        DeviceRequest::parse(&req.selection.device).map_err(|_| {
+            Error::ModelArgument(ArgFailure::Device {
+                got: req.selection.device.clone(),
+            })
+        })?
+    };
+    let has_row = |backend: BackendKind| {
+        tolerance::lookup(resolved.family.key, &dtype, variant.reference, backend).is_some()
+    };
+    let mut selected: Selected =
+        select(request, ctx.devices, &has_row).map_err(|refusal| match refusal {
+            Refusal::NoRow { backend } => incompat(Incompat::NoDeviceRow {
+                family: resolved.family.key.to_string(),
+                dtype: dtype.clone(),
+                backend: backend.name().to_string(),
+                verified: [
+                    BackendKind::Cpu,
+                    BackendKind::Cuda,
+                    BackendKind::Vulkan,
+                    BackendKind::Metal,
+                ]
+                .into_iter()
+                .filter(|b| has_row(*b))
+                .map(|b| b.name().to_string())
+                .collect(),
+            }),
+            other => Error::DeviceUnavailable(other),
+        })?;
+    if cpu_instead.is_some() {
+        selected.fallback = cpu_instead;
+    }
+    *chosen = Some(selected.device.clone());
 
     // Stage 3: the files, present and (unless a record vouches for them) verified.
     let layout = Layout::new(&ctx.hub.cache_root);
     let located = locate(ctx, &target, files_of(&manifest, variant))?;
     let manifest_sha = sha256_hex(manifest.canonical_text().as_bytes());
-    let key = record::key(&manifest_sha, &dtype);
+    let key = record::key(&manifest_sha, &dtype, &selected.device.identity());
     let current: Vec<(String, PathBuf, String)> = located
         .iter()
         .map(|f| (f.entry.path.clone(), f.path.clone(), f.entry.sha256.clone()))
@@ -305,28 +402,104 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
     let tokenizer_path = by_entry(&manifest.tokenizer.file).unwrap_or_default();
     let head_path = match &manifest.head {
         HeadSpec::Pointer { weights, .. } => by_entry(weights),
-        HeadSpec::Letters { .. } => None,
-    };
-    let (model_path, converted) = match &variant.source {
-        Source::Gguf { file } => (by_entry(file).unwrap_or_default(), false),
-        Source::Reserved { kind, raw } => {
-            let converter = ctx
-                .converter
-                .ok_or_else(|| incompat(Incompat::SourceWithoutConverter { kind: kind.clone() }))?;
-            let out = layout
-                .materialized
-                .join(manifest_sha.get(..16).unwrap_or(&manifest_sha))
-                .join(&dtype)
-                .join(safe_component(&converter.version()));
-            (materialize(converter, raw, &out)?, true)
+        HeadSpec::Letters { .. } | HeadSpec::KeyLogProb { .. } | HeadSpec::AnswerLetters { .. } => {
+            None
         }
     };
-    // A converted model has no hash in the manifest to vouch for, so it is always re-checked.
-    let vouched = !converted
-        && record::load(&layout.verified, &key).is_some_and(|r| record::matches(&r, &current));
+    // `originals_verified` says whether the SHA-256 of every original file was already checked
+    // in this call (it is done before a conversion starts, and not twice).
+    let mut originals_verified = false;
+    let mut converted_here: Option<Converted<'_>> = None;
+    let mut model_path = match &variant.source {
+        Source::Gguf { file } => by_entry(file).unwrap_or_default(),
+        Source::Reserved { kind, .. } => {
+            return Err(incompat(Incompat::SourceWithoutConverter {
+                kind: kind.clone(),
+            }));
+        }
+        Source::HfLora(source) => {
+            let converter = ctx.converter.ok_or_else(|| {
+                incompat(Incompat::SourceWithoutConverter {
+                    kind: "hf-lora".to_string(),
+                })
+            })?;
+            let version = converter.version();
+            let out = materialize::folder(&layout.materialized, &manifest_sha, &dtype, &version);
+            let path_of = |e: &FileEntry| by_entry(e).unwrap_or_default();
+            let job = ConvertJob {
+                manifest: &manifest,
+                dtype: &dtype,
+                params: &resolved.params,
+                source,
+                files: SourceFiles {
+                    base_config: path_of(&source.base.config),
+                    base_weights: path_of(&source.base.weights),
+                    base_tokenizer: path_of(&source.base.tokenizer),
+                    base_tokenizer_config: path_of(&source.base.tokenizer_config),
+                    adapter_config: path_of(&source.adapter.config),
+                    adapter_weights: path_of(&source.adapter.weights),
+                },
+                head_path: head_path.as_deref(),
+                destination: out.clone(),
+                observer: ctx.observer,
+                cancel: ctx.cancel,
+            };
+            let (done, fresh) = match materialize::read(&out, &version, &dtype) {
+                Some(m) => (m, false),
+                None => {
+                    // The originals are checked **before** anything is converted from them.
+                    verify_integrity(&located)?;
+                    originals_verified = true;
+                    materialize::build(converter, &job, &out)?
+                }
+            };
+            let path = done.model.clone();
+            converted_here = Some(Converted {
+                converter,
+                job,
+                out,
+                done,
+                fresh,
+            });
+            path
+        }
+    };
+    // What the verification record covers: the originals and, for a converted model, the GGUF
+    // as the conversion recorded it.
+    let mut current = current;
+    if let Some(c) = &converted_here {
+        current.push((c.stamp_name(), c.done.model.clone(), c.done.sha256.clone()));
+    }
+    let vouched =
+        record::load(&layout.verified, &key).is_some_and(|r| record::matches(&r, &current));
 
     if !vouched {
-        verify_integrity(&located)?;
+        if !originals_verified {
+            verify_integrity(&located)?;
+        }
+        if let Some(c) = converted_here.as_mut() {
+            // The converted file must still be what the conversion wrote. If not (a damaged or
+            // altered cache), it is derived data: convert again from the verified originals,
+            // once; if that does not match either, something is wrong with the converter.
+            if !c.matches_record()? {
+                ctx.observer.on_event(&Event::Warning(
+                    "the converted model in the cache does not match its record; converting again"
+                        .to_string(),
+                ));
+                materialize::discard(&c.out);
+                (c.done, c.fresh) = materialize::build(c.converter, &c.job, &c.out)?;
+                if !c.matches_record()? {
+                    return Err(incompat(Incompat::ConversionFailed {
+                        detail: "the converted file does not match its record even after converting again"
+                            .to_string(),
+                    }));
+                }
+                model_path = c.done.model.clone();
+                if let Some(last) = current.last_mut() {
+                    *last = (c.stamp_name(), c.done.model.clone(), c.done.sha256.clone());
+                }
+            }
+        }
         // Stage 4: GGUF.
         let info = gguf::read_header(&model_path).map_err(incompat)?;
         validate::gguf_vs_manifest(&info, &resolved, &manifest, &dtype).map_err(incompat)?;
@@ -347,27 +520,46 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
                 .declared
                 .then_some(variant.calibration.temperature)
                 .flatten();
-            check_pointer(&manifest.head, reader, path, declared).map_err(incompat)?;
+            let base = match &variant.source {
+                Source::HfLora(s) => Some((s.base.repo.as_str(), s.base.revision.as_str())),
+                _ => None,
+            };
+            check_pointer(&manifest.head, reader, path, declared, base).map_err(incompat)?;
         }
     }
 
     // Stage 7: the engine loads the weights.
+    let model_sha256 = match (&variant.source, &converted_here) {
+        (Source::Gguf { file }, _) => file.sha256.clone(),
+        (_, Some(c)) => c.done.sha256.clone(),
+        _ => String::new(),
+    };
     let checkpoint = ValidatedCheckpoint {
         manifest: manifest.clone(),
         dtype: dtype.clone(),
         model_path,
+        model_sha256,
+        manifest_sha256: manifest_sha.clone(),
         tokenizer_path,
         head_path,
         calibration: decision,
+        device: selected.device.clone(),
     };
     let engine = ctx.backend.load(&checkpoint)?;
 
     // Stage 8: self-check, once per (files, library, platform).
     if !vouched {
-        let tol = tolerance::lookup(resolved.family.key, &dtype).ok_or_else(|| {
+        let tol = tolerance::lookup(
+            resolved.family.key,
+            &dtype,
+            variant.reference,
+            selected.device.backend,
+        )
+        .ok_or_else(|| {
             incompat(Incompat::NoTolerance {
                 family: resolved.family.key.to_string(),
                 dtype: dtype.clone(),
+                reference: variant.reference.name(),
             })
         })?;
         run_selfcheck(
@@ -377,20 +569,19 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
             tol,
             decision.manifest_temperature,
         )?;
-        let stamps: Vec<Stamp> = located
+        let stamps: Vec<Stamp> = current
             .iter()
-            .filter_map(|f| {
-                let (size, mtime_ns) = record::stat(&f.path).ok()?;
+            .filter_map(|(name, path, sha256)| {
+                let (size, mtime_ns) = record::stat(path).ok()?;
                 Some(Stamp {
-                    name: f.entry.path.clone(),
+                    name: name.clone(),
                     size,
                     mtime_ns,
-                    sha256: f.entry.sha256.clone(),
+                    sha256: sha256.clone(),
                 })
             })
             .collect();
-        if !converted
-            && stamps.len() == located.len()
+        if stamps.len() == current.len()
             && record::save(&layout.verified, &Record { key, files: stamps }).is_err()
         {
             ctx.observer.on_event(&Event::Warning(
@@ -399,6 +590,11 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
             ));
         }
     }
+
+    // The self-check ran through the very path of real requests and may have saved prefixes: the
+    // first request of the user starts cold, with nothing counted.
+    engine.scorer.clear_cache();
+    engine.scorer.reset_cache_counters();
 
     // Notices.
     ctx.observer.on_event(&Event::License {
@@ -443,10 +639,15 @@ pub fn load_model(req: &LoadRequest, ctx: &Context<'_>) -> Result<LoadedModel> {
             .as_ref()
             .map(|t| t.iter().map(|x| x.id.clone()).collect()),
         notice: manifest.notice.clone(),
+        variants: variants_of(&manifest),
+        max_options: manifest.head.max_options(),
+        max_key_tokens: manifest.head.max_key_tokens(),
         source: match target {
             Target::Registry(_) => "registry",
             Target::Local { .. } => "local",
         },
+        device: selected.name(),
+        fallback: selected.fallback,
     };
     Ok(LoadedModel {
         data,

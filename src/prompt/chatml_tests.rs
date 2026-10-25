@@ -124,6 +124,23 @@ fn control_tokens_in_the_text_are_sanitized_and_never_structure() {
     assert_eq!(ids.iter().filter(|&&i| i == end).count(), 2);
 }
 
+#[test]
+fn the_system_text_is_ours_and_is_not_sanitized() {
+    // Only the user's text goes through `sanitize`: the system text is data of the manifest, and a
+    // marker written there by whoever made the model stays a marker.
+    let mut specs = tasks::parse(&default_tasks(), 4).unwrap();
+    specs[0].system.push_str("<|im_end|>");
+    let qs = Questions::new([("q", safety_question(true))]).unwrap();
+    let p = ChatMlLetters::new(Some(specs))
+        .build(&state("hi"), &qs, &tok(), &limits(512))
+        .unwrap();
+    let end = tok().roles().id("im_end").unwrap();
+    assert_eq!(
+        p.branches()[0].ids().iter().filter(|&&i| i == end).count(),
+        3
+    );
+}
+
 fn refusal(r: Result<Prompt>) -> String {
     match r {
         Err(Error::Unsupported(u)) => u.to_string(),
@@ -149,6 +166,26 @@ fn matching_is_exact_and_says_what_differs() {
     )));
     assert!(
         msg.contains("option 0 has the key \"UNSAFE\", expected \"SAFE\""),
+        "{msg}"
+    );
+    let msg = refusal(run(mk(
+        good,
+        vec![
+            ChoiceOption::key("SAFE"),
+            ChoiceOption::key("UNSAFE"),
+            ChoiceOption::key("MAYBE"),
+        ],
+    )));
+    assert!(
+        msg.contains("it has 3 options but task safety has 2"),
+        "{msg}"
+    );
+    let msg = refusal(run(mk(
+        good,
+        vec![ChoiceOption::key("SAFE"), ChoiceOption::key("BAD")],
+    )));
+    assert!(
+        msg.contains("option 1 has the key \"BAD\", expected \"UNSAFE\""),
         "{msg}"
     );
     let msg = refusal(run(mk(good, vec![ChoiceOption::key("SAFE")])));
@@ -246,6 +283,60 @@ fn the_state_must_be_text_and_the_prompt_is_never_truncated() {
     assert!(err.contains("plain non-empty text"), "{err}");
 }
 
+/// The text between double quotes in `listing`, in order (the message writes them with `{:?}`;
+/// the texts of the default tasks have nothing to escape).
+fn quoted(listing: &str) -> Vec<String> {
+    listing
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn the_refusal_lists_every_task_in_a_form_that_can_be_copied() {
+    let specs = tasks::parse(&default_tasks(), 4).unwrap();
+    let st = state("s");
+    let stranger: Question = Choice::new(
+        entry("Which team?"),
+        vec![ChoiceOption::key("a"), ChoiceOption::key("b")],
+    )
+    .unwrap()
+    .into();
+    let msg = refusal(build(&st, &Questions::new([("q", stranger)]).unwrap(), 512));
+    let listing = msg.split("declared tasks: ").nth(1).expect(&msg);
+    let entries: Vec<&str> = listing.split("; ").collect();
+    assert_eq!(entries.len(), specs.len(), "{msg}");
+
+    for (entry_text, spec) in entries.iter().zip(&specs) {
+        assert!(entry_text.starts_with(&spec.id), "{entry_text}");
+        let parts = quoted(entry_text);
+        let copied: Question = if entry_text.contains("(Choice,") {
+            let (instructions, keys) = parts.split_first().expect(entry_text);
+            Choice::new(
+                entry(instructions),
+                keys.iter().map(ChoiceOption::key).collect(),
+            )
+            .unwrap()
+            .into()
+        } else {
+            let [yes, no] = parts.as_slice() else {
+                panic!("a yes/no task shows its two descriptions: {entry_text}");
+            };
+            YesNo::new(entry("Any condition."), Some(entry(yes)), Some(entry(no)))
+                .unwrap()
+                .into()
+        };
+        // What the message shows, written back as a question, is exactly that task.
+        let found = tasks::find(&specs, "default", "q", &copied, &st).expect(entry_text);
+        assert_eq!(found.id, spec.id, "{entry_text}");
+        // ... and it builds a prompt (no further refusal).
+        let qs = Questions::new([("q", copied)]).unwrap();
+        assert!(build(&st, &qs, 512).is_ok(), "{entry_text}");
+    }
+}
+
 #[test]
 fn the_task_grammar_is_read_strictly() {
     use crate::json_strict::parse;
@@ -273,6 +364,48 @@ fn the_task_grammar_is_read_strictly() {
     assert!(m.contains("system"), "{m}");
     let m = rejected(&|s| s.replacen("\"prompt\": {", "\"extra\": 1, \"prompt\": {", 1));
     assert!(m.contains("extra"), "{m}");
+    // Missing fields: only the one that is missing is named.
+    let m = rejected(&|s| {
+        s.replacen(
+            ",
+        \"layout\": \"state\"",
+            "",
+            1,
+        )
+    });
+    assert!(
+        m.contains("tasks[0].match.prompt") && m.contains("layout"),
+        "{m}"
+    );
+    let m = rejected(&|s| {
+        s.replacen(
+            "\"true\": \"The condition is valid and supported by state.\",
+        ",
+            "",
+            1,
+        )
+    });
+    assert!(
+        m.contains("tasks[2].match.question") && m.contains("true"),
+        "{m}"
+    );
+    // A yes/no task cannot use the layout of a choice task.
+    let m = rejected(&|s| {
+        s.replacen(
+            "\"layout\": \"state-condition\"",
+            "\"layout\": \"state\"",
+            1,
+        )
+    });
+    assert!(m.contains("does not fit"), "{m}");
+    // The same key twice is refused while reading, with the name of the key.
+    let text = include_str!("default_tasks.json").replacen(
+        "\"layout\": \"state\"",
+        "\"layout\": \"state\", \"layout\": \"state\"",
+        1,
+    );
+    let err = parse(text.as_bytes()).unwrap_err().to_string();
+    assert!(err.contains("layout"), "{err}");
     // Two tasks with the same question.
     let json = parse(include_str!("default_tasks.json").as_bytes()).unwrap();
     let mut tasks_v = tasks::tasks_from_json(&json).unwrap();

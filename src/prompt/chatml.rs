@@ -4,15 +4,18 @@
 //! <|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\nOption:
 //! ```
 //!
-//! Each question is **one row** (the whole prompt): the state comes after the instructions, so
-//! there is no shared prefix. `<|im_start|>` and `<|im_end|>` are ids. The text between them is
+//! Each question is **one row** (the whole prompt) with no separate state: the system block and
+//! the head of the user text are the same for every question of a task, and the template says so
+//! with **cut points** (`Fixed` after `State:`, `Content` after the state when the layout puts it
+//! first), emitted only where the tokens of the text before the cut, tokenized alone, are the first
+//! tokens of the whole row. `<|im_start|>` and `<|im_end|>` are ids. The text between them is
 //! tokenized as one piece with the fixed text, exactly as the tokenizer does on the training
 //! string (added tokens split the text before the pre-tokenizer), and the user's text is sanitized
 //! first (the same function as `kev`). The prompt ends at `Option:` with **no space**; the answer
 //! is read at that last token.
 
 use super::limits::RequestLimits;
-use super::prompt::{Branch, Prompt};
+use super::prompt::{Branch, Cut, CutKind, Prompt};
 use super::sanitize::sanitize;
 use super::tasks::{self, TaskSpec};
 use super::template::Template;
@@ -64,7 +67,8 @@ impl Template for ChatMlLetters {
         let [im_start, im_end] = tokenizer.roles().require(ROLES)?;
         let mut branches = Vec::with_capacity(questions.len());
         for (name, question) in questions.iter() {
-            let (system, user) = match &self.tasks {
+            // `cut_info` is set for the tasks of the model: only they have a fixed head to keep.
+            let (system, user, cut_info) = match &self.tasks {
                 Some(specs) => {
                     let task = tasks::find(specs, limits.model, name, question, state)
                         .map_err(Error::Unsupported)?;
@@ -73,17 +77,18 @@ impl Template for ChatMlLetters {
                         StateValue::Str(s) => s.as_str(),
                         _ => "",
                     };
+                    let state_text = sanitize(state_text);
                     (
                         task.system.clone(),
-                        task.layout.render(
-                            &sanitize(state_text),
-                            &sanitize(question.instructions().rendered()),
-                        ),
+                        task.layout
+                            .render(&state_text, &sanitize(question.instructions().rendered())),
+                        Some((task.layout, state_text.into_owned())),
                     )
                 }
                 None => {
                     limits.check_question(name, question)?;
-                    generic(name, question, state, limits)?
+                    let (system, user) = generic(name, question, state, limits)?;
+                    (system, user, None)
                 }
             };
             let mut ids = vec![im_start];
@@ -94,20 +99,59 @@ impl Template for ChatMlLetters {
             ids.push(im_end);
             ids.extend(tokenizer.encode_raw("\n", "newline")?);
             ids.push(im_start);
-            ids.extend(tokenizer.encode_raw(
+            let user_start = ids.len();
+            let user_ids = tokenizer.encode_raw(
                 &format!("user\n{user}"),
                 &format!("text of question \"{name}\""),
-            )?);
+            )?;
+            let mut cuts = Vec::new();
+            if let Some((layout, state_text)) = &cut_info {
+                // A cut is only emitted if the tokens of the fixed text, tokenized alone, are the
+                // first tokens of the whole user text: a token merged across the boundary drops
+                // the cut for this row (and always for the same row: it depends on the row alone).
+                let head = tokenizer.encode_raw(
+                    &format!("user\n{}", layout.head_text()),
+                    "head of the user text",
+                )?;
+                if let Some(pos) = prefix_cut(&user_ids, &head, user_start) {
+                    cuts.push(Cut {
+                        pos,
+                        kind: CutKind::Fixed,
+                    });
+                }
+                if let Some(end) = layout.state_end_text() {
+                    let upto = tokenizer.encode_raw(
+                        &format!("user\n{} {state_text}{end}", layout.head_text()),
+                        "state of the user text",
+                    )?;
+                    if let Some(pos) = prefix_cut(&user_ids, &upto, user_start)
+                        && cuts.last().is_none_or(|last| pos > last.pos)
+                    {
+                        cuts.push(Cut {
+                            pos,
+                            kind: CutKind::Content,
+                        });
+                    }
+                }
+            }
+            ids.extend(user_ids);
             ids.push(im_end);
             ids.extend(tokenizer.encode_raw("\n", "newline")?);
             ids.push(im_start);
             ids.extend(tokenizer.encode_raw("assistant\nOption:", "answer prefix")?);
             limits.check_row(name, 0, ids.len())?;
             let decide = ids.len() - 1;
-            branches.push(Branch::new(ids, decide, Vec::new()));
+            branches.push(Branch::with_cuts(ids, decide, Vec::new(), cuts));
         }
         Ok(Prompt::new(Vec::new(), branches))
     }
+}
+
+/// Where a cut goes in the row: after `prefix`, which must be the first tokens of `full` (the
+/// user text, starting at `offset` in the row) and leave something after it.
+pub(super) fn prefix_cut(full: &[u32], prefix: &[u32], offset: usize) -> Option<usize> {
+    (!prefix.is_empty() && prefix.len() < full.len() && full.starts_with(prefix))
+        .then_some(offset + prefix.len())
 }
 
 /// The card's format for a `Choice` of a model that declares no tasks: instructions, then

@@ -31,6 +31,10 @@ pub struct GoldenQuestion {
     pub logits_tempered: Vec<f64>,
     /// Probabilities, float32 unrounded.
     pub probs: Vec<f64>,
+    /// Kev's `value` (the chosen key for a choice, the expected level for a score, ...).
+    pub value: Json,
+    /// Kev's `confidence`; `NaN` for a yes/no question.
+    pub confidence: f64,
 }
 
 /// One request of the golden with Kev's answer.
@@ -172,6 +176,12 @@ pub fn load(file: &str) -> Vec<GoldenCase> {
                             logits_raw: num_vec(field("logits_raw")),
                             logits_tempered: num_vec(field("logits_tempered")),
                             probs: num_vec(field("probs")),
+                            value: field("value").clone(),
+                            confidence: match field("confidence") {
+                                Json::Float(f) => *f,
+                                Json::Int(i) => *i as f64,
+                                _ => f64::NAN,
+                            },
                         }
                     })
                     .collect(),

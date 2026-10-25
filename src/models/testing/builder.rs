@@ -10,6 +10,7 @@ use super::jsonedit::{arr, b, f, n, obj, s, set};
 use crate::json_strict::Json;
 use crate::models::families::{self, ArchParams, ParamValue, Role};
 use crate::models::hash::sha256_hex;
+use crate::models::recipes;
 
 /// Name of the manifest file in a local model folder.
 pub const MANIFEST_FILE: &str = "archai-jev-manifest.json";
@@ -51,11 +52,13 @@ pub struct Builder {
     n_ff: u64,
     n_heads: u64,
     n_kv_heads: u64,
+    head_dim: u64,
     n_vocab: u64,
     tie: bool,
     context_length: u32,
     max_context: u64,
     declared: Option<f64>,
+    lora: bool,
     tensor_edits: Vec<Box<dyn Fn(&mut Vec<TensorDesc>)>>,
     meta_edits: Vec<Box<dyn Fn(&mut Vec<(String, Meta)>)>>,
     gguf_edits: Vec<Box<dyn Fn(&mut Vec<u8>)>>,
@@ -85,11 +88,13 @@ impl Builder {
             n_ff: 64,
             n_heads: 2,
             n_kv_heads: 1,
+            head_dim: 32,
             n_vocab: 32,
             tie: true,
             context_length: 2048,
             max_context: 512,
             declared: None,
+            lora: false,
             tensor_edits: Vec::new(),
             meta_edits: Vec::new(),
             gguf_edits: Vec::new(),
@@ -116,6 +121,16 @@ impl Builder {
         b
     }
 
+    /// A tiny checkpoint of `spark2_5-letters` (letters at the end, `spark-decisions` template):
+    /// four layers, so that the attention pattern has three sliding layers and a full one.
+    pub fn tiny_spark() -> Self {
+        let mut b = Builder::tiny();
+        b.family = "spark2_5-letters".to_string();
+        b.n_layers = 4;
+        b.n_vocab = 64;
+        b
+    }
+
     pub fn dtype(mut self, d: &str) -> Self {
         self.dtype = d.to_string();
         self
@@ -123,6 +138,17 @@ impl Builder {
     /// Make the manifest a registry one: files get an `origin`, revision is a commit hash.
     pub fn registry(mut self) -> Self {
         self.registry = true;
+        self
+    }
+    /// Make the variant's source an `hf-lora` one: six small files stand for the base model and
+    /// the adapter (the fake converter ignores their content; the loader still verifies them).
+    pub fn hf_lora(mut self) -> Self {
+        self.lora = true;
+        self
+    }
+    /// The number of rows of the vocabulary (and of the ids the fake engine builds).
+    pub fn vocab(mut self, n: u64) -> Self {
+        self.n_vocab = n;
         self
     }
     pub fn declared(mut self, temperature: f64) -> Self {
@@ -201,9 +227,32 @@ impl Builder {
         })
     }
 
+    /// Id of the letter `A` in the tiny spark tokenizer (after `<unk>` and the six roles).
+    const SPARK_LETTER_BASE: u64 = 7;
+
+    fn is_spark(&self) -> bool {
+        self.family == "spark2_5-letters"
+    }
+
+    /// The sliding window of the tiny spark model (any value: no forward ever runs).
+    const SPARK_WINDOW: u64 = 16;
+
     fn params(&self) -> ArchParams {
         let i = |x: u64| ParamValue::Int(x);
-        if self.family == "test-fake" || self.family == "test-kev" {
+        if self.is_spark() {
+            ArchParams::from_pairs(vec![
+                ("n_layers".to_string(), i(self.n_layers)),
+                ("n_embd".to_string(), i(self.n_embd)),
+                ("n_ff".to_string(), i(self.n_ff)),
+                ("n_heads".to_string(), i(self.n_heads)),
+                ("n_kv_heads".to_string(), i(self.n_kv_heads)),
+                ("head_dim".to_string(), i(self.head_dim)),
+                ("n_vocab".to_string(), i(self.n_vocab)),
+                ("tie_embeddings".to_string(), ParamValue::Bool(self.tie)),
+                ("sliding_window".to_string(), i(Self::SPARK_WINDOW)),
+                ("full_attention_every".to_string(), i(4)),
+            ])
+        } else if self.family == "test-fake" || self.family == "test-kev" {
             ArchParams::from_pairs(vec![
                 ("n_embd".to_string(), i(self.n_embd)),
                 ("n_vocab".to_string(), i(self.n_vocab)),
@@ -223,7 +272,18 @@ impl Builder {
 
     fn architecture_json(&self, arch: &str) -> Json {
         let mut pairs = vec![("name", s(arch))];
-        if self.family == "test-fake" || self.family == "test-kev" {
+        if self.is_spark() {
+            pairs.push(("n_layers", n(self.n_layers)));
+            pairs.push(("n_embd", n(self.n_embd)));
+            pairs.push(("n_ff", n(self.n_ff)));
+            pairs.push(("n_heads", n(self.n_heads)));
+            pairs.push(("n_kv_heads", n(self.n_kv_heads)));
+            pairs.push(("head_dim", n(self.head_dim)));
+            pairs.push(("n_vocab", n(self.n_vocab)));
+            pairs.push(("tie_embeddings", b(self.tie)));
+            pairs.push(("sliding_window", n(Self::SPARK_WINDOW)));
+            pairs.push(("full_attention_every", n(4)));
+        } else if self.family == "test-fake" || self.family == "test-kev" {
             pairs.push(("n_embd", n(self.n_embd)));
             pairs.push(("n_vocab", n(self.n_vocab)));
         } else {
@@ -241,7 +301,7 @@ impl Builder {
     fn gguf_bytes(&self) -> Vec<u8> {
         let family = families::lookup(&self.family).expect("family");
         let params = self.params();
-        let matrix_ty = families::matrix_type(&self.dtype).map_or(0, |t| t.0);
+        let matrix_ty = recipes::default_matrix_type(&self.dtype).map_or(0, |t| t.0);
         let mut tensors: Vec<TensorDesc> = (family.tensors)(&params)
             .into_iter()
             .map(|t| TensorDesc {
@@ -256,6 +316,7 @@ impl Builder {
                 let m = match v {
                     families::MetaExpect::Str(x) => Meta::Str(x),
                     families::MetaExpect::UInt(x) => Meta::U32(u32::try_from(x).unwrap()),
+                    families::MetaExpect::BoolArray(x) => Meta::BoolArray(x),
                 };
                 (k, m)
             })
@@ -284,13 +345,24 @@ impl Builder {
     fn tokenizer_json(&self) -> Json {
         let family = families::lookup(&self.family).expect("family");
         let mut vocab: Vec<(String, Json)> = vec![("<unk>".to_string(), n(0))];
-        for (i, w) in ["A", "B", "C", "D", "TRUE", "FALSE"].iter().enumerate() {
-            vocab.push(((*w).to_string(), n(3 + i as u64)));
-        }
+        // the roles take ids 1.., the spark letters follow them, the other families' words
+        // sit at 3..8 (where their head reads them)
+        let first_free = if self.is_spark() {
+            vocab.extend((0..26u8).map(|i| {
+                let letter = char::from(b'A' + i).to_string();
+                (letter, n(Self::SPARK_LETTER_BASE + u64::from(i)))
+            }));
+            Self::SPARK_LETTER_BASE + 26
+        } else {
+            for (i, w) in ["A", "B", "C", "D", "TRUE", "FALSE"].iter().enumerate() {
+                vocab.push(((*w).to_string(), n(3 + i as u64)));
+            }
+            9
+        };
         for (i, role) in family.special_roles.iter().enumerate() {
             vocab.push((role_text(role), n(1 + i as u64)));
         }
-        for i in 9..self.n_vocab {
+        for i in first_free..self.n_vocab {
             vocab.push((format!("w{i}"), n(i)));
         }
         let added: Vec<Json> = family
@@ -343,6 +415,22 @@ impl Builder {
             ]);
         }
         let target = |label: &str, id: u64| obj(vec![("label", s(label)), ("id", n(id))]);
+        if kind == "answer_letters" {
+            let letters = (0..26u8)
+                .map(|i| {
+                    target(
+                        &char::from(b'A' + i).to_string(),
+                        Self::SPARK_LETTER_BASE + u64::from(i),
+                    )
+                })
+                .collect();
+            return obj(vec![
+                ("kind", s("answer_letters")),
+                ("rule", s("restricted_softmax")),
+                ("letters", arr(letters)),
+                ("max_options", n(26)),
+            ]);
+        }
         obj(vec![
             ("kind", s("letters")),
             ("rule", s("restricted_softmax")),
@@ -362,6 +450,29 @@ impl Builder {
         ])
     }
 
+    /// The members of the manifest's `tokenizer` object; a family with control tokens lists
+    /// every added token of the tokenizer, as the script that writes real manifests does.
+    fn tokenizer_pairs(
+        &self,
+        family: &families::Family,
+        tok_bytes: &[u8],
+        roles: Vec<(&'static str, Json)>,
+    ) -> Vec<(&'static str, Json)> {
+        let mut pairs = vec![
+            ("file", self.file_entry("tokenizer.json", tok_bytes)),
+            ("special_tokens", obj(roles)),
+        ];
+        if self.is_spark() {
+            let listed = family
+                .special_roles
+                .iter()
+                .map(|r| s(&role_text(r)))
+                .collect();
+            pairs.push(("control_tokens", arr(listed)));
+        }
+        pairs
+    }
+
     fn file_entry(&self, path: &str, bytes: &[u8]) -> Json {
         let mut pairs = vec![
             ("path", s(path)),
@@ -375,6 +486,57 @@ impl Builder {
             ));
         }
         obj(pairs)
+    }
+
+    /// The files of an `hf-lora` source: `(role, path, content)`.
+    fn lora_files() -> [(&'static str, &'static str, &'static [u8]); 6] {
+        [
+            ("config", "base/config.json", b"{\"base\": \"config\"}"),
+            ("weights", "base/model.safetensors", b"base weights"),
+            (
+                "tokenizer",
+                "base/tokenizer.json",
+                b"{\"base\": \"tokenizer\"}",
+            ),
+            (
+                "tokenizer_config",
+                "base/tokenizer_config.json",
+                b"{\"base\": \"tokenizer_config\"}",
+            ),
+            (
+                "adapter_config",
+                "adapter/adapter_config.json",
+                b"{\"adapter\": 1}",
+            ),
+            (
+                "adapter_weights",
+                "adapter/adapter_model.safetensors",
+                b"adapter weights",
+            ),
+        ]
+    }
+
+    fn lora_source_json(&self) -> Json {
+        let f = Self::lora_files();
+        let entry = |i: usize| self.file_entry(f[i].1, f[i].2);
+        obj(vec![
+            ("kind", s("hf-lora")),
+            (
+                "base",
+                obj(vec![
+                    ("repo", s("test/tiny")),
+                    ("revision", s(COMMIT)),
+                    ("config", entry(0)),
+                    ("weights", arr(vec![entry(1)])),
+                    ("tokenizer", entry(2)),
+                    ("tokenizer_config", entry(3)),
+                ]),
+            ),
+            (
+                "adapter",
+                obj(vec![("config", entry(4)), ("weights", entry(5))]),
+            ),
+        ])
     }
 
     /// The self-check request used by every fixture.
@@ -419,7 +581,7 @@ impl Builder {
         ])
     }
 
-    fn vector(&self, temperature: f64) -> Json {
+    pub fn vector(&self, temperature: f64) -> Json {
         let request = self.request();
         let ids: Vec<Json> = fake_ids(&request, self.n_vocab)
             .into_iter()
@@ -458,6 +620,13 @@ impl Builder {
         let tok_bytes = tok_json.to_canonical_string().into_bytes();
         std::fs::write(dir.path().join("model.gguf"), &gguf).unwrap();
         std::fs::write(dir.path().join("tokenizer.json"), &tok_bytes).unwrap();
+        if self.lora {
+            for (_, path, content) in Self::lora_files() {
+                let full = dir.path().join(path);
+                std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+                std::fs::write(full, content).unwrap();
+            }
+        }
         let head_bytes = vec![0u8; 64];
         if family.head_kind == "pointer" {
             std::fs::write(dir.path().join("head.bin"), &head_bytes).unwrap();
@@ -507,10 +676,7 @@ impl Builder {
             ),
             (
                 "tokenizer",
-                obj(vec![
-                    ("file", self.file_entry("tokenizer.json", &tok_bytes)),
-                    ("special_tokens", obj(roles)),
-                ]),
+                obj(self.tokenizer_pairs(family, &tok_bytes, roles)),
             ),
             ("max_context", n(self.max_context)),
             (
@@ -528,10 +694,14 @@ impl Builder {
                     ("dtype", s(&self.dtype)),
                     (
                         "source",
-                        obj(vec![
-                            ("kind", s("gguf")),
-                            ("file", self.file_entry("model.gguf", &gguf)),
-                        ]),
+                        if self.lora {
+                            self.lora_source_json()
+                        } else {
+                            obj(vec![
+                                ("kind", s("gguf")),
+                                ("file", self.file_entry("model.gguf", &gguf)),
+                            ])
+                        },
                     ),
                     ("calibration", calibration),
                     (
@@ -541,6 +711,15 @@ impl Builder {
                 ])]),
             ),
         ]);
+        if self.is_spark() {
+            set(
+                &mut manifest,
+                "notice",
+                s(
+                    "A third-party general model: not calibrated, answers a multiple-choice question with a letter.",
+                ),
+            );
+        }
         for e in &self.manifest_edits {
             e(&mut manifest);
         }

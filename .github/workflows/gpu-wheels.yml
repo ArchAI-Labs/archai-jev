@@ -1,0 +1,220 @@
+# The wheel of the Vulkan build, `archai-jev-vulkan` (spec 011, T14, AC-23). It only BUILDS and keeps the files as
+# artifacts of the run: nothing is published from here. Publishing is a separate act of the maintainer, with Trusted
+# Publishing, like the CPU wheels.
+#
+# The decision (D63, 2026-10-23): one GPU wheel, the lightest that passes the gate, which is Vulkan (14-18 MB, no new
+# dependency, NVIDIA, AMD and Intel). CUDA stays a build from source (docs/gpu.md). The wheel is the same module
+# `archai_jev` under another distribution name (ci/gpu/make_variant.py), so it conflicts with `archai-jev`.
+#
+# What is verified: the Windows recipe is the one built by hand on the development machine. The Linux job has never run
+# (the first run may need fixes: the system packages, and what auditwheel does with libvulkan.so.1). The smoke test of
+# the result on a clean environment (T15) is the job `smoke` at the end.
+name: GPU wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the wheels to PyPI (project archai-jev-vulkan) after the smoke tests pass. Leave off to only build."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.99.1"
+  VULKAN_SDK_VERSION: "1.4.363.0"
+  VULKAN_INSTALLER_URL: https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/vulkansdk-windows-X64-1.4.363.0.exe
+  VULKAN_INSTALLER_SHA256: 94a82d378f7a5e3e54c9db7d2fb7016af136e14ac0a18dbf0f2f67a36352d141
+  # The limit of PyPI for one file (a request for more is a separate act); the wheel is far below it.
+  PYPI_LIMIT_BYTES: "104857600"
+
+jobs:
+  windows:
+    name: vulkan-windows-x64
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install the Vulkan SDK (checked against the SHA-256 above)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest $env:VULKAN_INSTALLER_URL -OutFile vulkansdk.exe -UseBasicParsing
+          $hash = (Get-FileHash vulkansdk.exe -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:VULKAN_INSTALLER_SHA256) { throw "vulkansdk.exe has SHA-256 $hash, expected $env:VULKAN_INSTALLER_SHA256" }
+          Start-Process .\vulkansdk.exe -ArgumentList "--accept-licenses","--default-answer","--confirm-command","install" -Wait
+          $sdk = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          if (-not (Test-Path "$sdk\Bin\glslc.exe")) { throw "glslc.exe is not in $sdk\Bin" }
+          "VULKAN_SDK=$sdk" >> $env:GITHUB_ENV
+          "$sdk\Bin" >> $env:GITHUB_PATH
+      # CMake needs Ninja and the MSVC environment together (the Visual Studio generator fails on this build).
+      - name: MSVC environment and Ninja
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          cmd /c "`"$vs\Common7\Tools\VsDevCmd.bat`" -arch=x64 -host_arch=x64 >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$' -and $matches[1] -notin @('GITHUB_ENV', 'GITHUB_PATH')) { "$($matches[1])=$($matches[2])" >> $env:GITHUB_ENV }
+          }
+          "$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja" >> $env:GITHUB_PATH
+          "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
+      - name: Windows build environment
+        shell: bash
+        run: |
+          echo "CARGO_TARGET_DIR=C:\t" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+          architecture: x64
+      - name: The distribution name of the GPU wheel
+        shell: bash
+        run: python ci/gpu/make_variant.py vulkan
+      - name: Build the wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x64
+          rust-toolchain: ${{ env.RUST_VERSION }}
+          args: --release --features vulkan --out dist
+      - name: Size against the limit of PyPI
+        shell: bash
+        run: |
+          for w in dist/*.whl; do
+            size=$(wc -c < "$w")
+            echo "$(basename "$w"): $size bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+            [ "$size" -lt "$PYPI_LIMIT_BYTES" ] || { echo "::error::$w is over the limit of PyPI"; exit 1; }
+          done
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wheels-vulkan-windows-x64
+          path: dist
+
+  linux:
+    name: vulkan-linux-x86_64
+    # Ubuntu 22.04 rather than the manylinux image of the CPU wheels: the Vulkan headers and the shader compiler come
+    # from the distribution, and maturin tags the wheel with the glibc of the runner (manylinux_2_35).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - name: System packages (loader, headers, shader compiler)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev pkg-config libvulkan-dev glslc spirv-headers patchelf
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: The distribution name of the GPU wheel
+        run: python ci/gpu/make_variant.py vulkan
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Build the wheel
+        run: |
+          python -m pip install "maturin>=1.15,<2.0"
+          maturin build --release --features vulkan --out dist
+      - name: Which libraries the extension needs
+        run: |
+          mkdir x && cd x && unzip -q ../dist/*.whl
+          ldd archai_jev/_core*.so | tee -a "$GITHUB_STEP_SUMMARY"
+          ls -la archai_jev.libs 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
+      - name: Size against the limit of PyPI
+        run: |
+          for w in dist/*.whl; do
+            size=$(wc -c < "$w")
+            echo "$(basename "$w"): $size bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+            [ "$size" -lt "$PYPI_LIMIT_BYTES" ] || { echo "::error::$w is over the limit of PyPI"; exit 1; }
+          done
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wheels-vulkan-linux-x86_64
+          path: dist
+
+  # ---- GP6: install the wheel in a clean environment and use it with no GPU ----------------------------------------
+  smoke-windows:
+    name: smoke-windows (py${{ matrix.python }})
+    needs: windows
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: wheels-vulkan-windows-x64
+          path: dist
+      - uses: astral-sh/setup-uv@v7
+      - name: Does this runner have the Vulkan loader? (recorded, not required)
+        shell: pwsh
+        run: |
+          "vulkan-1.dll in System32: $(Test-Path "$env:SystemRoot\System32\vulkan-1.dll")" | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+      - name: Install in a clean environment and use it
+        shell: bash
+        run: |
+          uv venv --python "${{ matrix.python }}" .smoke
+          uv pip install --python .smoke/Scripts/python.exe dist/*.whl
+          .smoke/Scripts/python.exe ci/gpu/smoke_devices.py --expect cpu,vulkan --no-gpu
+
+  smoke-linux:
+    name: smoke-linux (py${{ matrix.python }})
+    needs: linux
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: wheels-vulkan-linux-x86_64
+          path: dist
+      - uses: astral-sh/setup-uv@v7
+      - name: Install in a clean environment and use it
+        run: |
+          uv venv --python "${{ matrix.python }}" .smoke
+          uv pip install --python .smoke/bin/python dist/*.whl
+          .smoke/bin/python ci/gpu/smoke_devices.py --expect cpu,vulkan --no-gpu
+
+  # A machine with no Vulkan loader at all (a slim container): does `import archai_jev` survive, and does
+  # `device="cpu"` answer? If the import fails here the wheel cannot be offered to everyone as a replacement of the CPU wheel.
+  smoke-linux-bare:
+    name: smoke-linux-bare (no libvulkan)
+    needs: linux
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: wheels-vulkan-linux-x86_64
+          path: dist
+      - name: Install and use it in python:3.12-slim
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w python:3.12-slim sh -c '
+            ls /usr/lib/x86_64-linux-gnu/libvulkan* 2>/dev/null || echo "no libvulkan in this image"
+            pip install --quiet dist/*.whl
+            python ci/gpu/smoke_devices.py --expect cpu,vulkan --no-gpu'
+
+  publish:
+    name: Publish to PyPI
+    if: ${{ inputs.publish }}
+    needs: [windows, linux, smoke-windows, smoke-linux, smoke-linux-bare]
+    runs-on: ubuntu-latest
+    environment: pypi-vulkan
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v7
+      - name: Generate artifact attestation
+        uses: actions/attest@v4
+        with:
+          subject-path: 'wheels-*/*'
+      - uses: astral-sh/setup-uv@v7
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always 'wheels-*/*'

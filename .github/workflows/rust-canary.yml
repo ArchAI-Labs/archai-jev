@@ -1,0 +1,44 @@
+# Weekly look at the latest stable Rust. CI.yml pins the version it builds with, so a new lint cannot
+# break an unrelated push; this job says in advance when the pin has to move. A red run here is a
+# reminder, not a blocker: fix the code (or the lint) and bump RUST_VERSION in CI.yml.
+name: Rust canary
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  stable:
+    name: Latest stable (fmt, clippy, tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+      - name: Install dev dependencies
+        run: uv sync --no-install-project
+      - name: Point PyO3 at the venv interpreter
+        run: echo "PYO3_PYTHON=$(uv run --no-sync python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+      - name: Which Rust
+        run: rustc --version
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint (tests feature set)
+        run: cargo clippy --all-targets --features testing -- -D warnings
+      - name: Lint (release feature set)
+        run: cargo clippy --lib -- -D warnings
+      - name: Unit tests
+        run: cargo test --features testing --lib

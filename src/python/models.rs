@@ -12,6 +12,12 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use super::classes::PyModel;
+use crate::convert::Qwen35Converter;
+use crate::convert::headpt::HeadPtReader;
+use crate::engine::device::{BackendKind, DeviceProbe};
+use crate::engine::llama::{
+    LlamaProbe, compiled_backends as llama_compiled_backends, enumerations,
+};
 use crate::error::Error;
 use crate::hub::cache::{self, CacheEnv, Os};
 use crate::hub::config::HubConfig;
@@ -22,6 +28,7 @@ use crate::models::load::{self, Context, LoadRequest, ModelData};
 use crate::models::manifest::{HeadSpec, Manifest};
 use crate::models::registry::Registry;
 use crate::models::resolve::{NameOrPath, Selection};
+use crate::models::variants::{VariantData, variants_of};
 
 struct ProcessEnv;
 
@@ -72,6 +79,24 @@ impl Observer for LoggingObserver {
                 Self::log("info", &format!("model {name}: license {spdx} ({url})"));
             }
             Event::Warning(text) => Self::log("warning", text),
+            Event::ConvertStart {
+                tensors,
+                bytes,
+                destination,
+                dtype,
+            } => Self::log(
+                "info",
+                &format!(
+                    "converting the original files to a {dtype} GGUF ({tensors} tensors, {bytes} bytes) into {destination}; this happens once"
+                ),
+            ),
+            Event::ConvertProgress { done, total } => {
+                Self::log("info", &format!("conversion: {done} of {total} tensors"));
+            }
+            Event::ConvertDone { seconds, bytes } => Self::log(
+                "info",
+                &format!("conversion done in {seconds:.1} s ({bytes} bytes)"),
+            ),
         }
     }
 }
@@ -87,6 +112,25 @@ impl Cancel for SignalCancel {
 
 fn truthy(name: &str) -> bool {
     env(name).is_some_and(|v| !matches!(v.as_str(), "0" | "false" | "no"))
+}
+
+/// The variants of a manifest as plain dictionaries (`VariantInfo` is built in Python).
+fn variants_dicts<'py>(
+    py: Python<'py>,
+    variants: &[VariantData],
+) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    variants
+        .iter()
+        .map(|v| {
+            let out = PyDict::new(py);
+            out.set_item("dtype", &v.dtype)?;
+            out.set_item("size_bytes", v.size_bytes)?;
+            out.set_item("calibrated", v.calibrated)?;
+            out.set_item("temperature", v.temperature)?;
+            out.set_item("is_default", v.is_default)?;
+            Ok(out)
+        })
+        .collect()
 }
 
 fn info_dict<'py>(py: Python<'py>, d: &ModelData) -> PyResult<Bound<'py, PyDict>> {
@@ -105,12 +149,72 @@ fn info_dict<'py>(py: Python<'py>, d: &ModelData) -> PyResult<Bound<'py, PyDict>
     out.set_item("calibration_source", d.calibration_source)?;
     out.set_item("tasks", d.tasks.clone())?;
     out.set_item("notice", d.notice.as_deref())?;
+    out.set_item("variants", variants_dicts(py, &d.variants)?)?;
+    out.set_item("max_options", d.max_options)?;
+    out.set_item("max_key_tokens", d.max_key_tokens)?;
+    out.set_item("device", &d.device)?;
+    out.set_item("fallback", d.fallback.as_deref())?;
     Ok(out)
+}
+
+/// The devices this process can run a model on, as plain dictionaries. Lists them; loads nothing.
+#[pyfunction]
+pub fn available_devices(py: Python<'_>) -> PyResult<Vec<Bound<'_, PyDict>>> {
+    let devices = py.detach(|| LlamaProbe.devices());
+    devices
+        .iter()
+        .map(|d| {
+            let out = PyDict::new(py);
+            out.set_item("name", d.name())?;
+            out.set_item("kind", d.kind.name())?;
+            out.set_item("backend", d.backend.name())?;
+            out.set_item("description", &d.description)?;
+            out.set_item("memory_total_mib", d.memory_total_mib)?;
+            out.set_item("memory_free_mib", d.memory_free_mib)?;
+            Ok(out)
+        })
+        .collect()
+}
+
+/// The backends this build was compiled with: `cpu`, and each GPU backend of its features.
+#[pyfunction]
+pub fn compiled_backends() -> Vec<&'static str> {
+    llama_compiled_backends()
+        .into_iter()
+        .map(BackendKind::name)
+        .collect()
+}
+
+/// How many times the devices were listed in this process (a test reads it: `import` lists none).
+#[pyfunction]
+pub fn _device_enumerations() -> usize {
+    enumerations()
+}
+
+/// Memory of the prefix cache when nobody says otherwise, in MiB.
+const DEFAULT_PREFIX_CACHE_MIB: u64 = 128;
+
+/// The prefix cache limit in bytes: the argument, else `ARCHAI_JEV_PREFIX_CACHE_MIB` (read here,
+/// once per call), else the default. `0` turns the reuse off.
+fn prefix_cache_bytes(prefix_cache_mib: Option<u64>) -> PyResult<u64> {
+    let mib = match prefix_cache_mib {
+        Some(mib) => mib,
+        None => match env("ARCHAI_JEV_PREFIX_CACHE_MIB") {
+            None => DEFAULT_PREFIX_CACHE_MIB,
+            Some(v) => v.trim().parse::<u64>().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "ARCHAI_JEV_PREFIX_CACHE_MIB must be a whole number of MiB (0 turns the cache off), got {v:?}"
+                ))
+            })?,
+        },
+    };
+    mib.checked_mul(1 << 20)
+        .ok_or_else(|| PyValueError::new_err(format!("prefix_cache_mib is too large: {mib} MiB")))
 }
 
 /// Load a model (see `Jev.from_pretrained`). Arguments are already type-checked in Python.
 #[pyfunction]
-#[pyo3(signature = (kind, value, revision, device, dtype, temperature, allow_uncalibrated, cache_dir, offline, manifest))]
+#[pyo3(signature = (kind, value, revision, device, dtype, temperature, allow_uncalibrated, cache_dir, offline, manifest, prefix_cache_mib))]
 #[allow(clippy::too_many_arguments)]
 pub fn load_model<'py>(
     py: Python<'py>,
@@ -124,6 +228,7 @@ pub fn load_model<'py>(
     cache_dir: Option<PathBuf>,
     offline: bool,
     manifest: Option<PathBuf>,
+    prefix_cache_mib: Option<u64>,
 ) -> PyResult<(PyModel, Bound<'py, PyDict>)> {
     let name_or_path = match (kind, value) {
         ("default", _) => NameOrPath::Default,
@@ -146,6 +251,7 @@ pub fn load_model<'py>(
             }
         },
     };
+    let cache_bytes = prefix_cache_bytes(prefix_cache_mib)?;
     let root = cache::resolve_root(cache_dir.as_deref(), &ProcessEnv, Os::current())
         .map_err(Error::ModelDownload)?;
     let mut hub = HubConfig::new(root);
@@ -166,18 +272,19 @@ pub fn load_model<'py>(
         allow_uncalibrated,
     };
     let registry = Registry::builtin().map_err(Error::IncompatibleModel)?;
-    let backend = LlamaBackend::new(threads);
+    let backend = LlamaBackend::new(threads).with_prefix_cache(cache_bytes);
     let transport = UreqTransport::new(&hub);
     let loaded = py.detach(|| {
         let ctx = Context {
             registry,
             hub: &hub,
             backend: &backend,
+            devices: &LlamaProbe,
             transport: &transport,
             observer: &LoggingObserver,
             cancel: &SignalCancel,
-            head_reader: None,
-            converter: None,
+            head_reader: Some(&HeadPtReader),
+            converter: Some(&Qwen35Converter),
         };
         load::load_model(&request, &ctx)
     })?;
@@ -201,6 +308,8 @@ fn listed<'py>(py: Python<'py>, registry: &Registry, m: &Manifest) -> PyResult<B
         "head",
         match &m.head {
             HeadSpec::Letters { .. } => "letters",
+            HeadSpec::KeyLogProb { .. } => "key_logprob",
+            HeadSpec::AnswerLetters { .. } => "answer_letters",
             HeadSpec::Pointer { .. } => "pointer",
         },
     )?;
@@ -226,16 +335,25 @@ fn listed<'py>(py: Python<'py>, registry: &Registry, m: &Manifest) -> PyResult<B
     )?;
     out.set_item("notice", m.notice.as_deref())?;
     out.set_item("is_default", registry.is_default(m))?;
+    out.set_item("variants", variants_dicts(py, &variants_of(m))?)?;
+    out.set_item("max_options", m.head.max_options())?;
+    out.set_item("max_key_tokens", m.head.max_key_tokens())?;
     Ok(out)
 }
 
-/// The models of the registry, as plain dictionaries (static data: no network, no disk).
+/// The models of the registry, as plain dictionaries (static data: no network, no disk): one per
+/// name, at its current revision (the others are reached with `revision=`).
 #[pyfunction]
 pub fn list_models(py: Python<'_>) -> PyResult<Vec<Bound<'_, PyDict>>> {
     let registry = Registry::builtin().map_err(Error::IncompatibleModel)?;
     registry
-        .entries()
+        .names()
         .iter()
-        .map(|m| listed(py, registry, m))
+        .map(|name| {
+            let current = registry
+                .resolve(name, None)
+                .map_err(Error::IncompatibleModel)?;
+            listed(py, registry, current)
+        })
         .collect()
 }
